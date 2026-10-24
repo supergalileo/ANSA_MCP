@@ -25,11 +25,20 @@ Use when a part is a closed thin-walled solid description (`FACE`/`CONS` present
 Do not use for tetrahedral/volume meshing, for re-meshing an existing shell model,
 or for defining connections and welds. Those are separate tasks.
 
+**A part that `base.Skin` refuses is not automatically a solid.** Skin failing and
+a part being thick-walled look identical from the return value, and on a real BIW
+assembly Skin rejected 13 of 68 parts while `MidSurfAuto` went on to build a clean
+uniform mesh on 10 of them. Treat a Skin failure as *unknown* and retry with
+MidSurfAuto; only call a part non-shellable when both fail.
+
 ## Prerequisites
 
 - The `ansa` MCP server must be connected: `ansa_status` reports `connected: true`.
-- Confirm the target element length, and a maximum plausible sheet thickness
-  (a stamping is typically 0.5-3.0 mm; anything above the cap is not sheet metal).
+- Confirm the target element length.
+- Confirm the maximum plausible sheet thickness. Be generous: `max_thickness` is a
+  **hard filter, not a clamp** - a part whose wall exceeds it makes `Skin` return 0
+  and the part then looks exactly like a solid. Real automotive gauges go to 3.5 mm
+  (verified), so 3.0 is too tight for a BIW model; use 4.0-6.0.
 - Everything below is verified on **ANSA 23.0.0 with a NASTRAN deck**. On another
   release, re-verify at gate 1 before trusting the rest.
 
@@ -62,8 +71,9 @@ Exec `scripts/midsurface_mesh.py` with `PARAMS`:
 PARAMS = {
     "source": r"D:/proj/model.ansa",
     "target_length": 5.0,
-    "max_thickness": 3.0,
+    "max_thickness": 6.0,
     "output_dir": r"D:/proj/mesh_out",
+    "variable_thickness_policy": "drop",   # block | write_median | drop
 }
 SKILL = r"C:\Users\<you>\.workbuddy\skills\ansa-midsurface-mesh"
 exec(open(SKILL + r"\scripts\midsurface_mesh.py", encoding="utf-8").read(), globals())
@@ -74,16 +84,51 @@ The script runs two passes and is safe to re-run: it reloads `source` before eac
 pass, so a failed attempt leaves nothing behind in the session.
 
 - **Pass A** calls `base.Skin(apply_thickness=True, new_pid=True, offset_type=2,
-  ok_to_offset=True, max_thickness=<cap>, delete=False)` per part. `ret == 1` means
-  the part is thin-walled and the new PSHELL's `T` is the measured wall thickness.
-  `ret == 0` means it is not - leave that part as geometry, do not force it.
-- **Pass B** reloads and calls `base.MidSurfAuto(faces=..., thick=<measured T>,
+  ok_to_offset=True, max_thickness=<cap>, delete=False)` per part.
+  `ret == 1` → `status: "thin"`, and the new PSHELL's `T` is the measured wall.
+  `ret == 0` → `status: "unknown"`, **not** "not sheet metal": the wall may simply
+  be thicker than the cap, or the topology may defeat the offset.
+- **Pass B** reloads and calls `base.MidSurfAuto(faces=..., thick=<hint>,
   length=<target>, elem_type=3, part="auto_create", property="auto_create",
-  ret_ents=True, get_result_type=True)` per thin part. It then reads the thickness
-  MidSurfAuto stored on each element with `base.GetShellThickness(deck, shell)`,
-  takes the median, and writes it back into the PSHELL `T`.
+  ret_ents=True, get_result_type=True)` for **every** part that is thin *or*
+  unknown. For unknown parts the hint is a guess (1.0 / 0.8 / 1.5 / 2.0 / 0.6 mm,
+  all below the target length) and MidSurfAuto corrects it. **One call can create
+  several output parts, and `ret.type` does not list them all** - the created parts
+  are found by diffing the `ANSAPART` set before and after the call, plus a final
+  sweep for anything still unclaimed. Every output part is measured and written
+  separately. Thickness is read with `base.GetShellThickness(deck, shell)` over up
+  to 400 evenly spread elements and uniformity is decided on the **p2-p98** range,
+  not on min/max - a single mis-paired element at 20 mm on a 3 mm panel must not
+  condemn the part.
 
-Set `"dry_run": True` to stop after pass A and get only the thickness table.
+Statuses in `pass_b` are the only thing you should report from:
+
+| status | meaning |
+|---|---|
+| `meshed` | shells created, thickness uniform, `T` written |
+| `meshed_median` | `write_median` policy: spread over tolerance, median written on purpose |
+| `deferred_manual` | `drop` policy: shells deleted, solid faces kept for manual modelling |
+| `meshed_variable` | `block` policy: shells kept, spread over tolerance, **`T` not written** |
+| `not_shellable` | both Skin and MidSurfAuto produced nothing - a real solid |
+| `midsurf_failed` | MidSurfAuto raised on every hint |
+| `no_thickness_read` | mesh exists but no element thickness could be read |
+
+`variable_thickness_policy` decides what happens to a part whose gauge genuinely
+varies. **`drop` is the only one that produces a deck you can analyse as-is**: the
+part leaves the shell mesh, its solid faces stay in the `.ansa` for manual
+modelling, and it is listed in `deferred_manual`. `block` keeps the shells but
+leaves the default 1.0 mm gauge in every export - `verify.elements_without_T` then
+reports exactly how many elements are affected. Never ship a `block` deck without
+telling the user that number.
+
+Set `"uniform_tolerance": 0.15` to loosen the 10% default (it applies to the p2-p98
+range; in practice 10% is tight for extruded or hydroformed profiles).
+
+Set `"dry_run": True` to stop after pass A. That returns `n_thin_parts` and
+`n_unknown_parts` but cannot resolve the unknowns - measuring them requires
+MidSurfAuto, which a dry run deliberately skips.
+Set `"fallback_to_midsurf": False` to restore Skin-only gating (it will then
+silently drop every part Skin refuses).
 
 ### 3. Verify before reporting
 
@@ -97,13 +142,38 @@ The script returns `verify`. All of these must hold, or the result is not done:
 | `quad_ratio_sampled` | typically 0.8-0.95 for `elem_type=3` |
 | per part `T_written` | equals `T_measured`; `uniform` is true |
 | `faces_left` | only the parts that were never shelled |
+| `n_parts_needing_review` | **must be 0 before delivery**, or every entry in `review` must be explained |
+| `elements_without_T` | **must be 0 for a deliverable deck** - measured from the actual PSHELL state, not from the status counts |
+| `props_without_T` | the offenders behind that number (pid, shell count, T); their properties are renamed `*_UNVERIFIED_T` in the saved model so the hazard is visible in the GUI |
+| `strays_found` / `strays_resolved` | parts MidSurfAuto created without reporting them; non-zero means `ret.type` under-reported and the sweep had to clean up |
+| `n_created_parts` per part | should equal `n_reported_outputs`; when it is larger, the call created something it did not list |
+| `n_parts_deferred_manual` | with `drop`, the parts needing hand modelling; check the geometry is still in the `.ansa` |
+| `from_midsurf_fallback` | how many parts Skin could not measure; a high count means the cap or the topology needs attention, not that the run is wrong |
+
+`pass_b` status is the gate that matters, not `pass_a`. A part that ends as
+`meshed` is done. `deferred_manual` means the part is out of the shell mesh but its
+solid faces are still in the `.ansa` - that is the hand-off for manual modelling, not
+a failure. `not_shellable` is a genuine solid/casting.
+
+Beware the quiet consequence of `block`: because `T` was not written, the PSHELL
+keeps the mesher's default `T=1.0`, and that value **is** what the exported
+Nastran/Abaqus deck will contain. The shells are real and welded into the model, so
+a `review` entry is not a harmless warning - it is a part with the wrong gauge
+sitting in the delivered file. In class5.stp a `block` run put 18,298 of 77,034
+elements (23.8%) on a placeholder 1.0 mm gauge, unseen by any other metric. Use
+`drop` when the parts are going to be modelled by hand anyway.
 
 `edge_p50` sitting a few percent under the target is normal: the mesher projects
 onto curved geometry and the `sqrt(area)` proxy is not an edge length. A gap of 20%
 or more means the target length was not applied at all - stop and investigate.
 
-If a part reports `uniform: false`, its thickness varies beyond 10%. Do not silently
-average it; report the range and ask whether that part is a tailored blank.
+If a part is not uniform, its thickness varies beyond `uniform_tolerance`. The
+verdict is computed on the p2-p98 range because **min/max is not reproducible**: two
+instances of `JA10-34-801` in class5.stp have identical geometry and identical median
+(3.25 mm) yet one sampled [3.0, 3.25] and passed while the other sampled
+[2.83, 3.25] and was blocked - the same part, opposite verdicts, from a 40-element
+min/max window. Report `spread_pct` and `T_range_raw` together, and re-check rather
+than trusting a single number.
 
 ### 4. Report honestly
 
@@ -118,6 +188,19 @@ Also state that parts are meshed independently and therefore do not share nodes 
 connections must be defined separately.
 
 ## Decision rules that matter
+
+**`max_thickness` is a filter, not a clamp.** When the true wall is thicker than the
+cap, `Skin` returns 0 and the part becomes indistinguishable from a solid. It does
+not truncate `T` to the cap. Measured on class5.stp: at a 3.0 cap, `JA10-34-881` and
+`JA10-34-8N1` were reported "not thin-walled"; at a 6.0 cap both came out `thin` with
+`T = 3.5`. Conversely, a `T` that happens to equal the cap is not evidence of
+clipping - four parts reported `T = 3.000` at both caps because they really are
+3.0 mm.
+
+**Skin says nothing reliable about "is this sheet metal".** On the same model Skin
+returned 0 for 13 parts even at a 40 mm cap, so the cap was not the cause. MidSurfAuto
+then built uniform meshes (T 2.0-2.5 mm, spread < 1%) on 10 of those 13. Always give
+MidSurfAuto the last word.
 
 **Mesh size: use `MidSurfAuto(length=...)`, not `BatchGenerator`.**
 `mesh.BatchGenerator()` ignores the target length entirely. Editing
@@ -153,6 +236,13 @@ reliable selector is the newly created `@SKIN` property: collect its faces.
 - A part naming convention is not a classification. In one bumper model every `_P_`
   part was sheet metal and every `_WP_` part was not, but that was a coincidence of
   that dataset; classify with `Skin`'s return value.
+- `base.IsPartForSkin` is wrong in both directions and is not monotonic in its
+  tolerance. In class5.stp: `HXM113-0800` (bolts) returned False while the 6-face
+  solid blocks `JA10-34-8P8/8P9` returned **True**; `JA10-34-8H1` returned True at
+  tol 0.1 and False at 0.3. Never decide from it alone.
+- `Skin` failing is not a verdict. It fails for at least three different reasons -
+  wall over the cap, topology the offset cannot follow, and genuinely thick geometry -
+  and returns the same `0` for all of them. Only MidSurfAuto separates them.
 
 ## Bundled resources
 

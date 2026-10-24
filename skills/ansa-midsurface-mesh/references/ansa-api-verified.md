@@ -36,11 +36,33 @@ base.Skin(apply_thickness=True, new_pid=True, offset_type=2, ok_to_offset=True,
 
 | Observed | Detail |
 |---|---|
-| Return | `1` = the part was recognised as a thin solid and converted; `0` = not thin |
+| Return | `1` = the part was recognised as a thin solid and converted; `0` = **unknown**, not "not thin" |
 | `apply_thickness=True` | writes the **measured** wall thickness into a new PSHELL `T` |
 | `new_pid=True` | creates one PSHELL named `<old name>@SKIN` |
 | `delete=False` | keeps the original solid faces - essential while iterating |
 | Side effect | **renumbers faces**. Do not diff face-id sets to find the result |
+
+#### `0` is ambiguous - three different causes, one return value
+
+`max_thickness` is a **hard filter, not a clamp**. A wall thicker than the cap makes
+Skin return `0`; it never truncates `T` to the cap. Measured on class5.stp:
+
+| Part | true wall | `max_thickness=3.0` | `max_thickness=6.0` |
+|---|---|---|---|
+| `JA10-34-881` | 3.5 mm | `0` | `1`, T=3.5 |
+| `JA10-34-8N1` | 3.5 mm | `0` | `1`, T=3.5 |
+
+But the cap is not the only reason. On the same model 13 large panels returned `0` at
+caps of 6, 15 **and 40 mm** - so for those the cause is topology, not thickness. Two
+of them (`JA10-34-821`, 1514 faces; `JA10-34-8Z1`, 702 faces) also produced no
+MidSurfAuto output and really are solids. The other 10 produced uniform meshes.
+
+Practical consequence: never branch "is this sheet metal?" on Skin's return value.
+Feed every `0` to `MidSurfAuto` and let the mesh and its element thickness decide.
+
+Conversely, a `T` equal to the cap is **not** evidence of clipping: four parts on
+class5.stp returned exactly `T=3.000` at both a 3.0 and a 6.0 cap because they are
+genuinely 3.0 mm.
 
 Correct way to select the mid-surface afterwards: take the property created by this
 call and collect its faces.
@@ -75,12 +97,60 @@ r.ents        # created elements when ret_ents=True
 `result_type` observed: `"Steady thickness"`. Documented alternatives are
 `"Ribs"`, `"Variable thickness"`, `"Solid"`.
 
+**One call can create several output parts, and `ret.type` does not list them all.**
+`ret.type` holds one row per *reported* part, but the part set it reports is
+incomplete. Measured on class5.stp:
+
+| Run | Parts reported | Shells on reported parts | Shells actually in the model |
+|---|---|---|---|
+| full model, `ret.type[0]` only | 30 inputs | - | 39 output parts |
+| drop policy, every `ret.type` row | 71 | 66,084 | 69,352 |
+
+The 3,268-shell gap and the three properties that never got a measured `T` (7,494 /
+1,696 / 1,672 shells) were parts the call created and never reported. Neither
+`ret.type[0]` nor iterating all rows is enough.
+
+The reliable handle is a **part-set diff**:
+
+```python
+before = {p._id for p in base.CollectEntities(deck, None, "ANSAPART")}
+ret = base.MidSurfAuto(...)
+created = [p for p in base.CollectEntities(deck, None, "ANSAPART")
+           if p._id not in before]
+```
+
+Measure every created part that has shells, and keep a final sweep for anything
+still unclaimed before writing the deck. Verify the result by reading the exported
+properties back - a status counter says nothing about what actually landed in the
+file. `base.GetEntityCardValues(part, ["PID"])` *is* trustworthy: on 33 parts the
+part's PID matched the PID on every one of its shells, 0 mismatches.
+
 **`thick` is a detection hint, not the result.** Proof: on a part whose true wall is
 2.8 mm, `thick=1.0` still yielded `GetShellThickness` values of 2.797-2.800. Use a
 value in the right order of magnitude and let the algorithm measure.
 
+Corollary, measured on class5.stp: MidSurfAuto succeeded with `thick=1.0` on parts
+whose true walls were 2.0, 2.5 and 3.25 mm *and* which Skin had rejected outright. A
+guessed hint is therefore enough to recover a part Skin refuses - it does not have to
+be close to the truth.
+
 `property="auto_create"` builds a PSHELL but leaves `T` at the 1.0 default. The
 measured thickness lives on the elements, not in the property.
+
+**Reading them back: min/max is not a usable verdict.** Measured on class5.stp, two
+instances of the same part number `JA10-34-801` (identical face count, bounding box
+and area) gave opposite results from a 40-element min/max window:
+
+| instance | median | sampled range | verdict |
+|---|---|---|---|
+| part 8 | 3.25 | [2.83, 3.25] | spread 12.9% → blocked |
+| part 46 | 3.25 | [3.0, 3.25] | spread 7.7% → written |
+
+Same geometry, same median, opposite verdict - because `shells[::step]` lands on
+different elements and min/max is decided by one element. MidSurfAuto also mis-pairs
+faces occasionally: `JA10-34-803` had a median of 3.23 mm with a single element at
+**20.137 mm**, and min/max let that one element condemn the whole part. Use p2/p98
+over several hundred elements, and report the raw extremes separately.
 
 ### `base.GetShellThickness(deck, shell)`
 
@@ -133,10 +203,15 @@ useless for a specified size. Use `MidSurfAuto(length=...)`.
 
 ### `base.IsPartForSkin(part, thickness_tolerance) -> bool`
 
-Present but **not reliable on its own**: the result is not monotonic in the
-tolerance. On the same model, one part returned `False` at 0.1, `True` at 0.3 and
-`False` at 1.0. Use `Skin()`'s return value as the authority and this only as a
-hint.
+Present but **wrong in both directions**, and not monotonic in the tolerance.
+
+| Part | 0.1 | 0.3 | 1.0 | 3.0 | reality |
+|---|---|---|---|---|---|
+| `JA10-34-8H1` | True | False | False | False | MidSurfAuto: 5696 shells, T=2.5 uniform |
+| `JA10-34-8G1` | False | False | True | True | MidSurfAuto: 5870 shells, T=2.5 uniform |
+| `JA10-34-8P8` (6-face block) | True | True | True | True | solid block, no midsurface possible |
+
+Use `MidSurfAuto`'s output as the authority and this only as a weak hint.
 
 ### `base.GetPartDepth(part)`
 
@@ -192,10 +267,19 @@ base.OutputAbaqus(filename=path)        # returns 1 on success
 
 Return codes are ints, not booleans. Confirm success from the file size on disk.
 
+`base.Open(path)` **does not raise when the file is missing.** It writes
+`File does not exist !` to the ANSA log and returns, leaving the session with a
+single empty `Untitled` part. Everything downstream then behaves normally and the
+run reports "no thin-walled part found", so a renamed folder looks exactly like a
+model where `max_thickness` is too low. Always `os.path.isfile()` the path first and
+verify `len(CollectEntities(deck, None, "FACE"))` after loading.
+
 The Abaqus writer derives `ELSET` names from property names. A property called
 `Default PSHELL Property` becomes `ELSET=P74072;Default PSHELL Property, ...`,
 which does not parse. Rename properties to compact identifiers first; a `.` in the
-name is rewritten to `X` by the exporter.
+name is rewritten to `X` by the exporter. Note the exporter still emits the part id
+and the property name joined by `;` (`P161;SHELL_T1`), so a semicolon in the ELSET
+name survives the rename - it comes from ANSA, not from your property name.
 
 ## Entity type naming per deck
 
