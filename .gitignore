@@ -1,0 +1,52 @@
+# Runtime state written by the server itself
+logs/
+out/
+*.log
+.ansa_mcp_state.json
+.ansa_mcp_ledger.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# ANSA databases and solver decks must never be committed
+*.ansa
+*.nas
+*.bdf
+*.inp
+*.key
+*.k
+*.cdb
+*.rad
+*.pc
+*.odb
+*.dat
+*.f06
+*.sta
+*.prt
+*.msg
+*.sim
+*.op2
+
+# CAD input
+*.step
+*.stp
+*.igs
+*.iges
+*.x_t
+*.jt
+*.sldprt
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Personal work notes
+.workbuddy/
