@@ -1460,21 +1460,207 @@ after = len(base.CollectEntities(deck, None, 'SHELL')) + len(base.CollectEntitie
     return _fmt(res)
 
 
+# The whole-window grab runs inside ANSA. SnapShotWindow() wants an internal
+# BC window title, which the MDI main window does not have, and SnapShot()
+# only ever captures the graphics viewport. PrintWindow with
+# PW_RENDERFULLCONTENT (2) does capture the menu bar, toolbars, model tree,
+# side panels and the console - verified on ANSA 23.1.1 / Windows 10 19045,
+# 3697x1346 px, 98.6% non-black pixels.
+_WINDOW_SHOT_CODE = r'''
+import ctypes, os, struct, zlib
+from ctypes import wintypes
+import numpy as np
+
+def _mcp_list_windows():
+    u = ctypes.windll.user32
+    own = os.getpid()
+    hits = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _lparam):
+        if not u.IsWindowVisible(hwnd):
+            return True
+        n = u.GetWindowTextLengthW(hwnd)
+        if not n:
+            return True
+        buf = ctypes.create_unicode_buffer(n + 1)
+        u.GetWindowTextW(hwnd, buf, n + 1)
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value != own:
+            return True
+        rect = wintypes.RECT()
+        u.GetWindowRect(hwnd, ctypes.byref(rect))
+        hits.append({"title": buf.value, "hwnd": int(hwnd),
+                     "width": rect.right - rect.left,
+                     "height": rect.bottom - rect.top})
+        return True
+
+    u.EnumWindows(proc(_cb), 0)
+    return hits
+
+
+class _MCPBITMAPINFO(ctypes.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long),
+                ("biHeight", ctypes.c_long), ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD),
+                ("biXPelsPerMeter", ctypes.c_long),
+                ("biYPelsPerMeter", ctypes.c_long),
+                ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD)]
+
+
+def _mcp_grab_window(hwnd):
+    """PrintWindow the given hwnd and return (width, height, rgb_bytes)."""
+    u = ctypes.windll.user32
+    g = ctypes.windll.gdi32
+    rect = wintypes.RECT()
+    u.GetWindowRect(hwnd, ctypes.byref(rect))
+    w = rect.right - rect.left
+    h = rect.bottom - rect.top
+    if w <= 0 or h <= 0:
+        raise ValueError("window has no drawable size")
+    hdc = u.GetWindowDC(hwnd)
+    mem = g.CreateCompatibleDC(hdc)
+    bmp = g.CreateCompatibleBitmap(hdc, w, h)
+    old = g.SelectObject(mem, bmp)
+    try:
+        ok = u.PrintWindow(hwnd, mem, 2)  # PW_RENDERFULLCONTENT
+        if not ok:
+            u.PrintWindow(hwnd, mem, 0)
+        bi = _MCPBITMAPINFO()
+        bi.biSize = ctypes.sizeof(_MCPBITMAPINFO)
+        bi.biWidth = w
+        bi.biHeight = -h          # negative => top-down rows
+        bi.biPlanes = 1
+        bi.biBitCount = 32
+        bi.biCompression = 0
+        buf = ctypes.create_string_buffer(w * h * 4)
+        g.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(bi), 0)
+        raw = buf.raw
+    finally:
+        g.SelectObject(mem, old)
+        g.DeleteObject(bmp)
+        g.DeleteDC(mem)
+        u.ReleaseDC(hwnd, hdc)
+    bgra = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 4)
+    return w, h, bgra[:, :, [2, 1, 0]]
+
+
+def _mcp_write_png(path, rgb):
+    h, w, _ = rgb.shape
+    rows = b"".join(b"\x00" + rgb[y].tobytes() for y in range(h))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    with open(path, "wb") as fh:
+        fh.write(b"\x89PNG\r\n\x1a\n")
+        fh.write(chunk(b"IHDR", ihdr))
+        fh.write(chunk(b"IDAT", zlib.compress(rows, 6)))
+        fh.write(chunk(b"IEND", b""))
+
+
+def _mcp_write_bmp(path, rgb):
+    h, w, _ = rgb.shape
+    pad = (-w * 3) % 4
+    rows = []
+    for y in range(h - 1, -1, -1):
+        row = rgb[y].tobytes()
+        rows.append(row + b"\x00" * pad)
+    pixels = b"".join(rows)
+    size = 14 + 40 + len(pixels)
+    with open(path, "wb") as fh:
+        fh.write(b"BM")
+        fh.write(struct.pack("<IHHI", size, 0, 0, 54))
+        fh.write(struct.pack("<IiiHHIIiiII", 40, w, h, 1, 24, 0,
+                             len(pixels), 2835, 2835, 0, 0))
+        fh.write(pixels)
+
+
+def _mcp_shot(path, fmt, wanted_title):
+    tabs = _mcp_list_windows()
+    if not tabs:
+        raise RuntimeError("no visible window found in the ANSA process")
+    target = None
+    if wanted_title:
+        for item in tabs:
+            if item["title"] == wanted_title:
+                target = item
+                break
+        if target is None:
+            raise RuntimeError("no window titled %r; available: %s"
+                               % (wanted_title, [t["title"] for t in tabs]))
+    else:
+        # Prefer the MDI main window: biggest area whose title starts with ANSA.
+        ranked = sorted(tabs, key=lambda t: t["width"] * t["height"], reverse=True)
+        for item in ranked:
+            if item["title"].lower().startswith("ansa"):
+                target = item
+                break
+        if target is None:
+            target = ranked[0]
+    try:
+        guitk.BCApplicationProcessNonUserInputEvents()
+    except Exception:
+        pass
+    w, h, rgb = _mcp_grab_window(target["hwnd"])
+    lit = float((rgb.sum(axis=2) > 30).mean())
+    if fmt.lower() == "bmp":
+        _mcp_write_bmp(path, rgb)
+    else:
+        _mcp_write_png(path, rgb)
+    return {"file": path, "window": target["title"], "hwnd": target["hwnd"],
+            "width": w, "height": h, "nonblack_ratio": round(lit, 3),
+            "windows": [t["title"] for t in tabs]}
+'''
+
+_WINDOW_SHOT_TAIL = r'''
+_mcp_result = _mcp_shot(__OUT__, __FMT__, __TITLE__)
+_mcp_result
+'''
+
+
+def _window_shot_code(path: Path, image_format: str,
+                      window_title: str = "") -> str:
+    fmt = "bmp" if image_format.lower() in ("bmp",) else "png"
+    return (_WINDOW_SHOT_CODE
+            + _WINDOW_SHOT_TAIL
+            .replace("__OUT__", repr(str(path)))
+            .replace("__FMT__", repr(fmt))
+            .replace("__TITLE__", repr(window_title)))
+
+
 @mcp.tool()
 def ansa_screenshot(path: str, image_format: str = "png",
-                    timeout: int = 180) -> str:
-    """Grab the ANSA graphics window and save it as an image.
-
-    Very useful for checking a model visually. Requires gui mode (batch mode
-    has no graphics window).
+                    timeout: int = 180, target: str = "viewport",
+                    window_title: str = "") -> str:
+    """Save a picture of the ANSA session - viewport or the whole window.
 
     Args:
         path: image output path (.png recommended).
         image_format: png | jpg | bmp | tif.
+        target: "viewport" (3D graphics area only, fast, native SnapShot) or
+              "window" (full GUI: menu bar, toolbars, model tree, side panels,
+              console - captured through PrintWindow). Use "window" when you
+              need to see *where the user is* in the interface, not just the
+              geometry.
+        window_title: only with target="window"; exact window title such as
+              "ANSA v23.1.1". Empty means the largest visible ANSA window.
+
+    Requires gui mode; batch mode has no window at all.
     """
     p, err = _resolve_out(path)
     if p is None:
         return f"**{err}**"
+    if target.strip().lower() == "window":
+        code = _window_shot_code(p, image_format, window_title.strip())
+        return _fmt(SESSION.run(code, timeout=float(timeout),
+                                tool="ansa_screenshot",
+                                params={"path": str(p), "target": "window"}))
     code = f"""
 try:
     base.RedrawAll()
@@ -1486,6 +1672,333 @@ import os
   'size': os.path.getsize({p!r}) if os.path.exists({p!r}) else 0}}
 """
     return _fmt(SESSION.run(code, timeout=float(timeout), tool="ansa_screenshot"))
+
+
+JOBS_DIR = LOG_DIR / "jobs"
+
+
+def _write_job_state(path: Path, payload: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, default=repr),
+                   encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _async_payload_code(code: str, log_path: Path) -> str:
+    """Wrap user code so it runs inside ANSA with live, flushed output.
+
+    ``print`` is rebound to a writer that flushes every line, so
+    ``ansa_job_status`` can tail progress while the job is still running.
+    ``pump()`` is injected for long loops that want the GUI to keep
+    redrawing instead of freezing.
+
+    Note on why this is not an ``after``-style queue like the HyperMesh MCP
+    uses: ANSA has ``guitk.BCTimerSingleShot``, but a timer armed from an IAP
+    script never fires once that script returns - verified on 23.1.1, the job
+    stayed at "queued" indefinitely and only ran when something else called
+    ``BCApplicationProcessNonUserInputEvents``. So the deferral has to happen
+    on the MCP side (a worker thread), not inside ANSA.
+    """
+    return f"""
+import io as _io, time as _time, traceback as _traceback
+
+_mcp_log = {str(log_path)!r}
+_mcp_src = {code!r}
+_mcp_fh = _io.open(_mcp_log, "a", encoding="utf-8", errors="replace")
+
+
+def _mcp_emit(*args, **kwargs):
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\\n")
+    if sep is None:
+        sep = " "
+    _mcp_fh.write(sep.join(str(a) for a in args) + (end or ""))
+    _mcp_fh.flush()
+
+
+def pump():
+    \"\"\"Let ANSA redraw and process input. Call it inside long loops.\"\"\"
+    try:
+        guitk.BCApplicationProcessNonUserInputEvents()
+    except Exception:
+        pass
+
+
+globals()["print"] = _mcp_emit
+_t0 = _time.time()
+_status, _error = "ok", ""
+try:
+    exec(compile(_mcp_src, "<mcp-job>", "exec"), globals())
+except BaseException:
+    _status, _error = "error", _traceback.format_exc()
+try:
+    base.RedrawAll()
+except Exception:
+    pass
+_mcp_fh.close()
+{{"mcp_status": _status, "mcp_error": _error,
+  "mcp_elapsed": round(_time.time() - _t0, 3)}}
+"""
+
+
+@mcp.tool()
+def ansa_run_async(code: str, timeout: int = 3600,
+                   mutating: bool = True) -> str:
+    """Run python in ANSA without blocking the MCP client.
+
+    Use this for anything that takes more than a few seconds: tetra meshing,
+    batch mesh, STEP import, long loops. Plain ``ansa_run_python`` holds the
+    IAP socket for the whole run, so the client waits, cannot see progress,
+    and loses the result if it times out. Here:
+
+    * the script is dispatched on a worker thread and this call returns a
+      ``job_id`` immediately,
+    * ``print()`` inside the job is flushed line by line into a log you can
+      tail with ``ansa_job_status`` while it runs,
+    * ``pump()`` is available inside the job; call it in long loops to let
+      the GUI redraw (ANSA's own event loop does not run during an IAP
+      script, so without it the window freezes until the job ends).
+
+    Args:
+        code: python statements, same namespace as ``ansa_run_python``
+              (ansa, base, constants, mesh, utils, guitk, ansavars).
+        timeout: how long the job itself may run before the server gives up.
+        mutating: keep the default ``True`` unless you know the script only
+              reads. It records the job in the operation ledger so a crashed
+              job is reported as unresolved instead of being silently lost.
+    """
+    if not code.strip():
+        return "**code is empty**"
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    job_id = (f"job_{time.strftime('%Y%m%d_%H%M%S')}_"
+              f"{new_operation_id().split('_')[-1][:8]}")
+    state_path = JOBS_DIR / f"{job_id}.json"
+    log_path = JOBS_DIR / f"{job_id}.log"
+    log_path.write_text("", encoding="utf-8")
+    started = time.time()
+    _write_job_state(state_path, {"job_id": job_id, "status": "queued",
+                                  "queued_at": started,
+                                  "mutating": mutating})
+    payload = _async_payload_code(code, log_path)
+
+    def _worker() -> None:
+        try:
+            res = SESSION.run(payload, timeout=float(timeout),
+                              tool="ansa_run_async",
+                              params={"job_id": job_id},
+                              operation_id=job_id, mutating=mutating)
+        except Exception as exc:  # noqa: BLE001
+            _write_job_state(state_path, {
+                "job_id": job_id, "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "queued_at": started, "finished_at": time.time()})
+            return
+        parsed: dict = {}
+        try:
+            parsed = json.loads(res.get("result") or "{}")
+        except Exception:  # noqa: BLE001
+            parsed = {}
+        status = parsed.get("mcp_status") or ("ok" if res.get("ok") else "error")
+        _write_job_state(state_path, {
+            "job_id": job_id, "status": status,
+            "elapsed": parsed.get("mcp_elapsed"),
+            "error": parsed.get("mcp_error") or res.get("error", ""),
+            "operation_id": res.get("operation_id", job_id),
+            "delta": res.get("delta") or {},
+            "queued_at": started, "finished_at": time.time(),
+        })
+
+    threading.Thread(target=_worker, name=f"ansa-job-{job_id}",
+                     daemon=True).start()
+    return (f"**dispatched** `{job_id}`\n\n"
+            f"- log: `{log_path}`\n"
+            f"- poll: `ansa_job_status(job_id=\"{job_id}\")`\n"
+            f"- the client is free now; the job keeps running inside ANSA\n"
+            f"- inside the job, call `pump()` in long loops so the window "
+            f"keeps redrawing")
+
+
+@mcp.tool()
+def ansa_job_status(job_id: str = "", tail_lines: int = 40) -> str:
+    """Read the status and live log tail of an ``ansa_run_async`` job.
+
+    Args:
+        job_id: id returned by ``ansa_run_async``. Empty lists recent jobs.
+        tail_lines: how many trailing log lines to show (max 400).
+    """
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    if not job_id.strip():
+        files = sorted(JOBS_DIR.glob("job_*.json"),
+                       key=lambda p: p.stat().st_mtime)
+        if not files:
+            return "no async jobs have been run yet"
+        lines = [f"**{len(files)} job(s), newest last**", "",
+                 "| job_id | status | age |", "|---|---|---|"]
+        for f in files[-20:]:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                data = {"status": "unreadable"}
+            age = int(time.time() - (data.get("finished_at")
+                                     or data.get("queued_at")
+                                     or f.stat().st_mtime))
+            lines.append(f"| `{f.stem}` | {data.get('status', '?')} | {age}s |")
+        return "\n".join(lines)
+
+    job = job_id.strip()
+    state_path = JOBS_DIR / f"{job}.json"
+    log_path = JOBS_DIR / f"{job}.log"
+    if not state_path.exists() and not log_path.exists():
+        return f"**unknown job** `{job}` - nothing under `{JOBS_DIR}`"
+    try:
+        data = (json.loads(state_path.read_text(encoding="utf-8"))
+                if state_path.exists() else {})
+    except Exception as exc:  # noqa: BLE001
+        return f"**unreadable state** `{state_path}`: {exc}"
+
+    status = data.get("status", "running")
+    age = int(time.time() - (data.get("finished_at")
+                             or data.get("queued_at") or time.time()))
+    head = f"**{job}** - status: `{status}` - age: {age}s"
+    if data.get("elapsed") is not None:
+        head += f" - script elapsed: {data.get('elapsed')}s"
+    out = [head]
+    text = ""
+    if log_path.exists():
+        rows = log_path.read_text(encoding="utf-8",
+                                  errors="replace").splitlines()
+        n = max(1, min(int(tail_lines), 400))
+        text = "\n".join(rows[-n:])
+        out.append(f"- log: `{log_path}` ({len(rows)} line(s))")
+    else:
+        out.append("- log: (not created yet)")
+    if text.strip():
+        out += ["", "```", text.rstrip(), "```"]
+    elif status in ("queued", "running"):
+        out.append("(no output yet)")
+    err = str(data.get("error") or "").strip()
+    if err:
+        out += ["", "**error**", "```", err[-4000:].rstrip(), "```"]
+    return "\n".join(out)
+
+
+@mcp.tool()
+def ansa_gui_state() -> str:
+    """Report where the user is in the interface, without changing anything.
+
+    Returns the active module menu, whether the session is really gui mode,
+    the current deck, and every visible top-level window of the ANSA process
+    (dialogs included). Pair it with ``ansa_screenshot(target="window")``.
+    """
+    code = r'''
+import ctypes, os
+from ctypes import wintypes
+
+
+def _mcp_windows():
+    u = ctypes.windll.user32
+    own = os.getpid()
+    names = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _lparam):
+        if not u.IsWindowVisible(hwnd):
+            return True
+        n = u.GetWindowTextLengthW(hwnd)
+        if not n:
+            return True
+        buf = ctypes.create_unicode_buffer(n + 1)
+        u.GetWindowTextW(hwnd, buf, n + 1)
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == own:
+            rect = wintypes.RECT()
+            u.GetWindowRect(hwnd, ctypes.byref(rect))
+            names.append({"title": buf.value,
+                          "width": rect.right - rect.left,
+                          "height": rect.bottom - rect.top})
+        return True
+
+    u.EnumWindows(proc(_cb), 0)
+    return names
+
+
+_state = {}
+try:
+    _state["gui_mode"] = bool(guitk.BCApplicationIsGuiMode())
+except Exception as _exc:
+    _state["gui_mode"] = "ERR: %s" % _exc
+try:
+    _state["menu"] = base.CurrentMenu()
+except Exception as _exc:
+    _state["menu"] = "ERR: %s" % _exc
+try:
+    _state["deck"] = str(base.CurrentDeck())
+except Exception as _exc:
+    _state["deck"] = "ERR: %s" % _exc
+_state["windows"] = _mcp_windows()
+_state
+'''
+    res = SESSION.run(code, tool="ansa_gui_state")
+    if not res.get("ok"):
+        return _fmt(res)
+    try:
+        data = json.loads(res.get("result") or "{}")
+    except Exception:  # noqa: BLE001
+        return _fmt(res)
+    lines = ["| item | value |", "|---|---|",
+             f"| gui mode | {data.get('gui_mode')} |",
+             f"| module menu | `{data.get('menu')}` |",
+             f"| deck | `{data.get('deck')}` |"]
+    lines += ["", "**visible windows**", "", "| title | size |", "|---|---|"]
+    for w in data.get("windows") or []:
+        lines.append(f"| {w.get('title')} | {w.get('width')}x{w.get('height')} |")
+    lines += ["", "switch module with `ansa_gui_menu`, capture with "
+                  "`ansa_screenshot(target=\"window\")`"]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def ansa_gui_menu(menu: str = "") -> str:
+    """Read or switch the ANSA module menu (the first toolbar row).
+
+    Args:
+        menu: TOPO | MESH | VOLUME MESH | MORPH | HEXA BLOCK | CROSS |
+              KINETICS. Empty just reports the current one.
+
+    This is a real GUI state change - the toolbar and the right-hand function
+    panel are rebuilt. It does not touch the model, so it is not recorded in
+    the operation ledger.
+    """
+    menu = menu.strip()
+    if menu:
+        code = f"""
+_before = base.CurrentMenu()
+_ret = base.SetCurrentMenu({menu!r})
+try:
+    guitk.BCApplicationProcessNonUserInputEvents()
+except Exception:
+    pass
+{{'requested': {menu!r}, 'return': _ret, 'before': _before,
+  'after': base.CurrentMenu()}}
+"""
+    else:
+        code = "{'before': base.CurrentMenu(), 'after': base.CurrentMenu()}"
+    res = SESSION.run(code, tool="ansa_gui_menu", params={"menu": menu})
+    if not res.get("ok"):
+        return _fmt(res)
+    try:
+        data = json.loads(res.get("result") or "{}")
+    except Exception:  # noqa: BLE001
+        return _fmt(res)
+    if not menu:
+        return f"current module menu: `{data.get('after')}`"
+    if data.get("return") in (1, "1", True):
+        return (f"switched `{data.get('before')}` -> `{data.get('after')}`\n\n"
+                f"capture it with `ansa_screenshot(target=\"window\")`")
+    return (f"**switch refused** (`{data.get('before')}` unchanged) - "
+            f"`{menu}` is not an accepted menu name. Try TOPO, MESH, "
+            f"VOLUME MESH, MORPH, HEXA BLOCK, CROSS or KINETICS.")
 
 
 @mcp.tool()

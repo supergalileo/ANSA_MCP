@@ -257,6 +257,47 @@ utils.SnapShot(path, "png")    # returns 0 on success
 did not change a subsequent snapshot in one test - re-verify if a second angle is
 needed.
 
+## GUI state (verified on 23.1.1)
+
+```python
+base.CurrentMenu()             # e.g. "Classic Topo" / "Classic Mesh"
+base.SetCurrentMenu("MESH")    # 1 on success, 0 on refusal
+guitk.BCApplicationIsGuiMode() # True in a visible session
+guitk.BCApplicationProcessNonUserInputEvents()  # pump: redraw + handle input
+```
+
+`SetCurrentMenu` rebuilds the toolbar and the right-hand function panel for real -
+use it to drive the interface, not just to read state. Accepted values are
+`TOPO`, `MESH`, `VOLUME MESH`, `MORPH`, `HEXA BLOCK`, `CROSS`, `KINETICS`; the
+observed names come back with a `Classic ` prefix.
+
+**Whole-window capture.** `utils.SnapShotWindow(path, "PNG", title)` always fails
+with `I can not find window with title ...` for the main MDI window (tried
+`ANSA`, `ANSA v23.1.1`, `Untitled - ANSA v23.1.1`, ...) - it only addresses
+ANSA-created BC windows. `utils.SnapShot` covers the 3D viewport only. To capture
+the menu bar, toolbars, model tree, side panels and console, use Win32:
+
+```python
+u, g = ctypes.windll.user32, ctypes.windll.gdi32
+u.EnumWindows(callback, 0)          # filter by GetWindowThreadProcessId == os.getpid()
+hdc = u.GetWindowDC(hwnd)
+mem = g.CreateCompatibleDC(hdc)
+bmp = g.CreateCompatibleBitmap(hdc, w, h)
+g.SelectObject(mem, bmp)
+u.PrintWindow(hwnd, mem, 2)         # 2 = PW_RENDERFULLCONTENT, captures OpenGL too
+g.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(bi), 0)   # negative biHeight = top-down
+```
+
+Verified: `ANSA v23.1.1` window, 3697×1346 px, 98.6% non-black pixels. ANSA's
+embedded Python is 3.8 with **numpy but no PIL**, so PNG encoding has to be done
+by hand (`zlib` + CRC chunks) or written as BMP.
+
+**Timers do not survive the IAP call.** `guitk.BCTimerSingleShot(1, cb)` from an
+IAP script returns `None` and the callback never runs once that script returns -
+job status stayed at `queued` indefinitely. Only
+`guitk.BCApplicationProcessNonUserInputEvents()` drove it. There is no
+`after`-equivalent for deferring work inside ANSA; defer on the MCP side.
+
 ## Solvers and files
 
 ```python

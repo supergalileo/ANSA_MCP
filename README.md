@@ -103,10 +103,35 @@ pip install -r requirements.txt
 | `ansa_list_entities` | 列出某类实体的 id / 名称 / 指定字段 |
 | `ansa_get_entity_values` | 读单个实体的完整编辑卡 |
 | `ansa_mesh` | 划网格（`batch` 批处理生成器，或 free/best/map） |
-| `ansa_screenshot` | 抓图形窗口存 png（先 `RedrawAll` 再拍） |
+| `ansa_screenshot` | 抓图：`target="viewport"` 只拍 3D 视口，`target="window"` 拍整个界面（菜单栏 / 工具栏 / 模型树 / 侧栏 / 命令行） |
+| `ansa_gui_state` | 当前模块菜单、是否真是 gui 模式、当前 deck、所有可见窗口标题与尺寸 |
+| `ansa_gui_menu` | 读或切换模块菜单（TOPO / MESH / VOLUME MESH / MORPH / HEXA BLOCK / CROSS / KINETICS） |
 | `ansa_run_python` | **万能入口**：在 ANSA 里跑任意 Python |
+| `ansa_run_async` | 后台线程派发长任务，立即返回 `job_id`，`print()` 实时落盘 |
+| `ansa_job_status` | 查 job 状态并 tail 实时日志 |
 | `ansa_step_history` | 最近 100 步的序列 / 状态 / 数量差值 |
 | `ansa_api_search` | 查 ANSA Python API 签名和示例 |
+
+### GUI 相关能力
+
+ANSA 没有 HyperMesh 那种可注入的 Tcl 监听器，它的 IAP 本身就是"在可见 GUI 会话里执行
+Python"，所以不需要额外 bridge。只有三件事需要专门处理：
+
+| 需求 | 做法 | 限制 |
+|---|---|---|
+| 看几何 | `utils.SnapShot()` | 只拍 3D 视口（实测 1089×400） |
+| 看整个界面 | `PrintWindow(PW_RENDERFULLCONTENT)` + GDI + 自写 PNG 编码 | 实测 3697×1346、98.6% 非黑；`utils.SnapShotWindow()` 要的是 ANSA 内部 BC 窗口名，主窗口取不到 |
+| 长任务不卡客户端 | `ansa_run_async` 用 server 侧工作线程发包 | ANSA 侧仍是同步执行，GUI 会冻结，除非循环里调 `pump()` |
+
+`pump()` 注入在 job 命名空间里，等价于 `guitk.BCApplicationProcessNonUserInputEvents()`：
+ANSA 跑 IAP 脚本期间自己的事件循环不转，窗口不刷新，循环里定期调它才能看到进度。
+
+> **为什么不用定时器排队**：`guitk.BCTimerSingleShot()` 从 IAP 脚本里注册，脚本一返回
+> 定时器就不再触发（实测 job 永远卡在 `queued`，只有别处调用
+> `BCApplicationProcessNonUserInputEvents()` 时才补跑）。HyperMesh MCP 的 `after 1`
+> 能成立是因为 Tcl 解释器常驻；Python 侧没有等价物，延迟只能放在 MCP 端。
+
+GUI 工具不模拟鼠标键盘，也不遍历菜单控件——所有操作走 Python API。
 
 ### `ansa_open` 的导入器路由
 
