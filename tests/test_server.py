@@ -97,6 +97,9 @@ if __name__ == "__main__":
     print("=" * 70)
     expect("non-boolean flag is rejected",
            S.ansa_run_python("1", mutating=1), "must be true or false")
+    # `out/` is gitignored, so a fresh clone has no file to open here. Without a
+    # real file the guard is never reached and the call answers "file not found".
+    S.ansa_export("out/simple.nas", "nastran", overwrite=True)
     expect("merge=false without confirm is refused",
            S.ansa_open("out/simple.nas", merge=False), "refusing to replace")
 
