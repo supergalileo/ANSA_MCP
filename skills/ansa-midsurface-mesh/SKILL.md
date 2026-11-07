@@ -34,24 +34,39 @@ MidSurfAuto; only call a part non-shellable when both fail.
 **Repair the geometry before giving up on Skin.** Verified on ANSA 24.1.2: two
 CATParts at 417 and 442 faces returned 0 for every `max_thickness` up to 40 mm,
 then produced 135 and 147 middle-surface faces with the correct gauges (1.709 mm)
-after
+after a geometry check-and-fix.
+
+Use the v24 API, not the deprecated one:
 
 ```python
-base.CheckAndFixGeometry(input=part,
-                         options=["CRACKS", "SINGLE CONS", "OVERLAPS", "NEEDLE FACES"],
-                         fix_options=[1, 1, 1, 1],
-                         return_one_matrix_for_every_error=False,
-                         remaining_errors=True)
+# defaults == the ANSA Geometry check panel (Checks > Geometry)
+obj = base.checks.general.Geometry()      # problematic_surfs, unchecked_faces,
+                                          # collapsed_cons, triple_cons, needle_faces,
+                                          # overlap_faces, needle_areas, cracks = 1
+                                          # single_cons, sharp_edges = 0
+for _ in range(3):                        # fixes can expose new errors
+    reports = obj.execute()
+    if not reports:
+        break
+    before = len(base.CollectEntities(deck, None, "FACE"))
+    for r in reports:
+        r.try_fix()
+    if len(base.CollectEntities(deck, None, "FACE")) == before:
+        break
 ```
 
-- Run the repair **before** Skin, and do **not** follow it with
-  `base.RebuildTopology` - on B0025 that dropped Skin straight back to 0.
-  `RebuildTopology` alone also failed where `CheckAndFixGeometry` succeeded, so
-  they are not interchangeable.
-- `CheckAndFixGeometry` returns `None` when it finds nothing to report; it still
-  normalises topology, so a `None` return does not mean the call did nothing.
-- Repair may split faces (`RebuildTopology` took 417 faces to 551). Pass the
-  **part** rather than the face list to keep the change minimal.
+- `base.CheckAndFixGeometry` was **deprecated in v24.0** and only accepts nine
+  options; it has no `Problematic Surfaces` and no `Needle Areas`. A pipeline
+  built on it silently skips two of the checks the GUI runs by default.
+- `try_fix()` returns nothing even when it repairs something - watch the FACE
+  count, not the return value.
+- Do **not** follow the repair with `base.RebuildTopology`; on B0025 that dropped
+  Skin straight back to 0. `RebuildTopology` alone also failed where the check
+  fixed it, so they are not interchangeable.
+- Repair may split faces (`RebuildTopology` took 417 faces to 551), and on a
+  264-part run the extra checks turned one un-shellable part into 5 338 elements
+  (`B0854`), but only 2 of 101 failures recovered overall - the rest are genuinely
+  not thin-walled solids.
 - `base.Skin(apply_thickness=True, new_pid=True, new_part=True)` puts the middle
   surface in its own part and gives it a PSHELL whose `T` is the measured wall.
   A Batch Mesh run over that part inherits the same PSHELL, so the mesh carries

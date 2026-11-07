@@ -464,3 +464,45 @@ file lists worked without licence trouble: ~0.4 GB RSS each, 16 cores. Workers
 must share one stem map computed from the full, name-sorted file list, write
 separate `_progress_w<n>.jsonl`, and skip the shared summary CSV
 (`write_summary=False`) - concurrent rewrites of one CSV collide.
+
+### Geometry check: `checks.general.Geometry()` vs the deprecated `CheckAndFixGeometry`
+
+`base.CheckAndFixGeometry` is deprecated as of **v24.0.0** ("new features are not
+supported"). Verified on 24.1.2:
+
+| | `CheckAndFixGeometry(options=[...])` | `base.checks.general.Geometry()` |
+|---|---|---|
+| Problematic Surfaces | not supported | `problematic_surfs = 1` |
+| Needle Areas | not supported | `needle_areas = 1` |
+| Unchecked Faces / Collapsed Cons / Triple Cons | supported, opt-in | on by default |
+| Needle Faces / Overlap Faces / Cracks | supported, opt-in | on by default |
+| Single Cons / Sharp Edges | supported, opt-in | off by default |
+| return | `None` / matrix | `list[CheckReport]` |
+
+The `Geometry()` defaults are exactly what the ANSA **Checks > Geometry** panel
+ships with, so this is the API that matches the GUI.
+
+```python
+obj = base.checks.general.Geometry()          # attributes are writable, e.g.
+obj.single_cons = 1                           # turn an extra check back on
+for _ in range(3):
+    reports = obj.execute()
+    if not reports:
+        break
+    before = len(base.CollectEntities(deck, None, "FACE"))
+    for r in reports:
+        r.try_fix()
+    base.RedrawAll()
+    if len(base.CollectEntities(deck, None, "FACE")) == before:
+        break
+```
+
+- `try_fix()` returns `None` on success as well as on no-op. The observable
+  signal is the FACE count (`O137`: 158 -> 157 on the first round) or a re-run of
+  `execute()` that still returns reports.
+- Effect on 101 parts that Skin had already refused: 2 recovered
+  (`B0854_A0072600609` -> 5 338 elements, `B0672_A0072600902` -> 4 391), 99 still
+  failed. On a further 5 that look like sheet metal (uniform 1.0-1.8 mm, 85-98 %
+  area) even 16 `Skin` parameter combinations plus this repair produced nothing,
+  so those bodies are not closed thin-wall solids whatever the thickness estimate
+  says.

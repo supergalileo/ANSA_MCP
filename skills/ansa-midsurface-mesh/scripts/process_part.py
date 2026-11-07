@@ -41,7 +41,8 @@ try:
 except NameError:  # pragma: no cover
     from ansa import base, constants, mesh, session, utils, batchmesh
 
-CHECK_OPTS = ["CRACKS", "SINGLE CONS", "OVERLAPS", "NEEDLE FACES"]
+CHECK_OPTS = ["UNCHECKED FACES", "COLLAPSED CONS", "TRIPLE CONS",
+              "NEEDLE FACES", "OVERLAPS", "CRACKS"]
 CODE_RE = re.compile(r"([A-Za-z]\d{7,10})")
 
 
@@ -238,6 +239,53 @@ def run(params):
     # ------------------------------------------------------------ 2. repair
     origin_pids = pids_of(deck, solid_faces)
 
+    def geometry_checkfix(max_rounds=3):
+        """Check and fix with the v24 API.
+
+        `base.CheckAndFixGeometry` was deprecated in 24.0 and only knows nine
+        options; it has no `Problematic Surfaces` and no `Needle Areas`. The
+        replacement, `base.checks.general.Geometry()`, defaults to exactly the
+        set of checks the ANSA Geometry panel ships with: problematic surfs,
+        unchecked faces, collapsed cons, triple cons, needle faces, overlap
+        faces, needle areas, cracks - and `single_cons`/`sharp_edges` off.
+
+        `try_fix()` returns nothing even when it repairs something, so the loop
+        watches the FACE count instead: keep fixing until a round changes
+        nothing (or the report comes back empty).
+        """
+        steps = []
+        for i in range(int(max_rounds)):
+            try:
+                res = base.checks.general.Geometry().execute()
+            except Exception as exc:                      # pre-24 release
+                steps.append({"round": i + 1, "error": str(exc)[:120]})
+                return steps, False
+            n = len(res) if res is not None else 0
+            before = len(base.CollectEntities(deck, None, "FACE"))
+            for r in (res or []):
+                try:
+                    r.try_fix()
+                except Exception:
+                    pass
+            base.RedrawAll()
+            after = len(base.CollectEntities(deck, None, "FACE"))
+            steps.append({"round": i + 1, "reports": n, "faces": [before, after]})
+            if n == 0 or after == before:
+                break
+        return steps, True
+
+    def geometry_checkfix_legacy():
+        """Fallback for releases without `base.checks`."""
+        try:
+            base.CheckAndFixGeometry(input=solid_part, options=CHECK_OPTS,
+                                     fix_options=[1] * len(CHECK_OPTS),
+                                     return_one_matrix_for_every_error=False,
+                                     remaining_errors=True)
+            return True
+        except Exception as exc:
+            log["repair_err"] = str(exc)[:200]
+            return False
+
     def skin():
         """Skin the solid -> (faces_skinned, faces_check, new_parts, ret).
 
@@ -279,14 +327,11 @@ def run(params):
         drop_parts(new_parts)
 
     if n_skin == 0 and repair in ("auto", "always"):
-        try:
-            base.CheckAndFixGeometry(input=solid_part, options=CHECK_OPTS,
-                                     fix_options=[1, 1, 1, 1],
-                                     return_one_matrix_for_every_error=False,
-                                     remaining_errors=True)
-            log["repair_steps"].append("checkfix")
-        except Exception as exc:
-            log["repair_err"] = str(exc)[:200]
+        steps, modern = geometry_checkfix()
+        log["repair_steps"].append("geometry_checkfix" if modern else "checkfix_legacy")
+        log["geometry_fix"] = steps
+        if not modern:
+            geometry_checkfix_legacy()
         n_ok, n_chk, new_parts, ret = skin()
         n_skin = n_ok + n_chk
         log["skin"] = {"faces": n_skin, "skinned": n_ok, "check": n_chk,
