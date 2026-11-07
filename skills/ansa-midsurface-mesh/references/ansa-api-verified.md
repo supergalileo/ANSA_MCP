@@ -257,47 +257,6 @@ utils.SnapShot(path, "png")    # returns 0 on success
 did not change a subsequent snapshot in one test - re-verify if a second angle is
 needed.
 
-## GUI state (verified on 23.1.1)
-
-```python
-base.CurrentMenu()             # e.g. "Classic Topo" / "Classic Mesh"
-base.SetCurrentMenu("MESH")    # 1 on success, 0 on refusal
-guitk.BCApplicationIsGuiMode() # True in a visible session
-guitk.BCApplicationProcessNonUserInputEvents()  # pump: redraw + handle input
-```
-
-`SetCurrentMenu` rebuilds the toolbar and the right-hand function panel for real -
-use it to drive the interface, not just to read state. Accepted values are
-`TOPO`, `MESH`, `VOLUME MESH`, `MORPH`, `HEXA BLOCK`, `CROSS`, `KINETICS`; the
-observed names come back with a `Classic ` prefix.
-
-**Whole-window capture.** `utils.SnapShotWindow(path, "PNG", title)` always fails
-with `I can not find window with title ...` for the main MDI window (tried
-`ANSA`, `ANSA v23.1.1`, `Untitled - ANSA v23.1.1`, ...) - it only addresses
-ANSA-created BC windows. `utils.SnapShot` covers the 3D viewport only. To capture
-the menu bar, toolbars, model tree, side panels and console, use Win32:
-
-```python
-u, g = ctypes.windll.user32, ctypes.windll.gdi32
-u.EnumWindows(callback, 0)          # filter by GetWindowThreadProcessId == os.getpid()
-hdc = u.GetWindowDC(hwnd)
-mem = g.CreateCompatibleDC(hdc)
-bmp = g.CreateCompatibleBitmap(hdc, w, h)
-g.SelectObject(mem, bmp)
-u.PrintWindow(hwnd, mem, 2)         # 2 = PW_RENDERFULLCONTENT, captures OpenGL too
-g.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(bi), 0)   # negative biHeight = top-down
-```
-
-Verified: `ANSA v23.1.1` window, 3697×1346 px, 98.6% non-black pixels. ANSA's
-embedded Python is 3.8 with **numpy but no PIL**, so PNG encoding has to be done
-by hand (`zlib` + CRC chunks) or written as BMP.
-
-**Timers do not survive the IAP call.** `guitk.BCTimerSingleShot(1, cb)` from an
-IAP script returns `None` and the callback never runs once that script returns -
-job status stayed at `queued` indefinitely. Only
-`guitk.BCApplicationProcessNonUserInputEvents()` drove it. There is no
-`after`-equivalent for deferring work inside ANSA; defer on the MCP side.
-
 ## Solvers and files
 
 ```python
@@ -343,3 +302,165 @@ base.DeleteEntity([ents])  # accepts a list
 base.GetEntity(deck, "ANSAPART", part_id)
 base.CollectEntities(deck, container_entity, "FACE")   # container filters scope
 ```
+
+## Meshing engines (verified ANSA 24.1.2, NASTRAN deck)
+
+### `mesh.Mesh` == Shell Mesh > Mesh
+
+```python
+mesh.ReadMeshParams(mpar)          # -> 1
+mesh.ReadQualityCriteria(qual)     # -> 1
+base.SetANSAdefaultsValues({"mesh_change_option": "macro perimeters"})
+mesh.Mesh(faces)                   # takes FACE or SHELL entities, or "visible"
+```
+
+`mesh_change_option` accepts `"macro perimeters"` (default; perimeters may be
+joined/released and all feature treatments apply, including geometry-altering
+ones such as fillet sharpening), `"perimeter grids"`, and `"mesh"` (perimeters
+untouched, no feature treatment). It is an ANSA default - it is **not** stored in
+the `.ansa`, so it must be set on every run.
+
+### Batch Mesh session
+
+```python
+ses  = batchmesh.GetNewSession("BM")
+batchmesh.ReadSessionMeshParams(ses, mpar)        # -> 1
+batchmesh.ReadSessionQualityCriteria(ses, qual)   # -> 1
+scen = batchmesh.GetNewMeshingScenario("SC", "PARTS")
+batchmesh.AddPartToMeshingScenario(parts, scen)   # parts that own FACEs
+batchmesh.AddSessionToMeshingScenario([ses], scen)
+batchmesh.RunMeshingScenario(scen, time_limit=20) # 1 = ran, 2 = did not run
+```
+
+- `GetSessionMeshParamsName([ses])` / `GetSessionQualityCriteriaName([ses])`
+  return `""` even after a successful read. Useless as evidence.
+- A part that owns only shells and no FACEs yields 0 elements: the session
+  applies `existing_mesh_treatment = Erase` and has no macro to re-mesh.
+- Batch Mesh Manager does **not** extract midsurfaces (confirmed in
+  `docs/assets/best_practices/Batch_Mesh_Manager.pdf`). Skin/MidSurfAuto first.
+
+### Did the mpar actually reach the mesher?
+
+Round-trip is not enough on its own - `SaveMeshParams` reflects the active set,
+which may already equal the file. The decisive probe is to change one value in a
+copy and watch the mesh follow:
+
+| file loaded | edge p50 | elements (12-face panel) |
+|---|---|---|
+| user mpar, target 5 | 4.777 mm | 218 |
+| same file with target edited to 8 | 6.711 mm | 134 |
+| no mpar at all | 4.777 mm | 218 |
+
+The third row is not a failure: the user's file differed from the factory default
+in three lines (`target_element_length` 5, `joined_perimeters` Reset vs Keep,
+`maximum_aspect_ratio` 5 vs 2), so it meshes like the default. Diff a user file
+against `mesh.SaveMeshParams()` from a fresh session before drawing conclusions.
+
+### Reading results back after `base.SaveAs`
+
+`CollectEntities(deck, property, "SHELL")` and `CollectEntities(deck, part,
+"SHELL")` return 0 on a reopened `.ansa` even though the elements exist. Use the
+element card:
+
+```python
+pid = int(base.GetEntityCardValues(deck, shell, ["PID"]).get("PID"))
+```
+
+Without this, a verification script reports "no properties, no thickness" on a
+perfectly good file.
+
+### `base.Skin` after geometry repair
+
+Two CATParts at 417 and 442 faces returned 0 for `Skin` at every
+`max_thickness` up to 40 mm, then produced 135 and 147 middle-surface faces with
+the correct gauge (1.709 mm) after:
+
+```python
+base.CheckAndFixGeometry(input=part,
+                         options=["CRACKS", "SINGLE CONS", "OVERLAPS", "NEEDLE FACES"],
+                         fix_options=[1, 1, 1, 1],
+                         return_one_matrix_for_every_error=False,
+                         remaining_errors=True)
+```
+
+- Run it **before** Skin and do not follow it with `base.RebuildTopology` - that
+  reverted B0025 to 0. `RebuildTopology` alone also failed where
+  `CheckAndFixGeometry` succeeded.
+- It returns `None` when nothing is reported; the topology is still normalised.
+- `Skin(apply_thickness=True, new_pid=True, new_part=True)` puts the middle
+  surface in its own part and its PSHELL carries the measured `T`; a subsequent
+  mesh on those faces inherits that property, so no extra thickness write is
+  needed - but check that no meshed PSHELL is left at the placeholder 1.0 mm.
+
+### Run order, not engine, drives the numbers
+
+One part (B0027), one Skin result, one session, same parameter files - only the
+order of the meshing calls changed:
+
+| step | elements | aspect max |
+|---|---|---|
+| `mesh.Mesh`, first pass | 204 | 2.864 |
+| `mesh.Mesh`, second pass after deleting the mesh | 218 | 2.345 |
+| Batch Mesh, third pass | 208 | 2.861 |
+
+The second pass is not "a better engine" - it starts from a perimeter node
+distribution that the first pass already rewrote (`change_option =
+macro perimeters` is allowed to join/release perimeters). Consequences:
+
+- Comparing two engines on the same surface only means something on the **first**
+  pass of a fresh Skin; a re-mesh always measures the second pass.
+- Reopening a saved `.ansa` and re-meshing is a second pass too, which is why it
+  gives different (usually better-looking) numbers than the original run.
+- Report which pass a number came from, or the reader will attribute it to the
+  engine.
+
+
+### `OutputNastran` silently drops MAT1 unless DEFINED=YES
+
+A CATPart import brings a placeholder `MAT1` named "Default MAT1 Material" with
+`DEFINED = NO`. `base.OutputNastran()` then writes `PSHELL ... MID1=1` but **no
+`MAT1` card**, and returns 1, so the failure is invisible until the solver runs.
+
+| attempt | MAT1 in deck |
+|---|---|
+| plain `OutputNastran(filename=...)` | no |
+| `base.All()` then export | no |
+| `OutputNastran(..., mode="all")` | no (only adds the empty origin PSHELL) |
+| create a new MAT1, point `PSHELL.MID1` at it | no - the new entity is also `DEFINED=NO` |
+| `SetEntityCardValues(deck, mat1, {"DEFINED": "YES"})` then export | **yes** |
+
+Correct order: flip `DEFINED`, `base.SaveAs` the database so both agree, then
+`OutputNastran`. Verify with `grep '^MAT1'`, expecting
+`MAT1           1 210000.             0.3  7.85-9`.
+
+### `base.Skin` return: three buckets (ANSA 24.1.2)
+
+```python
+ret = base.Skin(apply_thickness=True, new_pid=True, offset_type=2, ok_to_offset=True,
+                max_thickness=6.0, delete=False, entities=faces,
+                treat_chamfers=True, new_part=True, fail_on_all_errors=False)
+# ret == {"skinned": [...], "check": [...], "failed": [...]}
+```
+
+- `skinned` and `check` both contain created middle-surface FACEs (`len(g["skin"])`).
+  `check` = built but flagged for review; still meshable.
+- `failed` entries hold the source faces and no skin.
+- Every call creates one new ANSAPART per group **regardless of the bucket**, so
+  a retry leaves the previous attempt's parts behind unless they are deleted.
+  Verified on `B0318_A0072600305`: three attempts left three parts of 58 faces
+  each.
+
+### `DetectSolidDescription(estimate_thickness=True)` sentinel
+
+Returns `[{thickness: area_fraction}]`. On an open body / mixed wall it answers
+`{-1.0: 0.0}` or `{-1.0: 1.0}`. `-1` means *estimation failed*; it must not be
+compared against a thickness limit. Seen on `B0747_A0072600594` (15.8 MB), which
+then turned out to Skin successfully at 1.062 mm.
+
+### Running several ANSA instances
+
+Three `ansa64.bat -nogui -nolauncher -exec load_script:` processes on disjoint
+file lists worked without licence trouble: ~0.4 GB RSS each, 16 cores. Workers
+must share one stem map computed from the full, name-sorted file list, write
+separate `_progress_w<n>.jsonl`, and skip the shared summary CSV
+(`write_summary=False`) - concurrent rewrites of one CSV collide.

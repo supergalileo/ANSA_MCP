@@ -1,6 +1,6 @@
 ---
 name: ansa-midsurface-mesh
-description: Extract mid-surfaces from thin-walled CAD geometry in ANSA and generate a shell mesh at a given target element size, with the measured wall thickness written into PSHELL properties. This skill should be used for requests such as "抽中面并划 5mm 网格", "钣金件抽中面并赋予正确厚度", "midsurface + shell mesh for the sheet metal parts", "把 CAD 面模型变成壳网格并导出求解文件", or whenever an ANSA database full of closed thin-walled surfaces must become a solver-ready shell mesh. Covers part classification, thickness measurement, element-size control, verification gates, and Nastran/Abaqus export.
+description: Extract mid-surfaces from thin-walled CAD geometry in ANSA and generate a shell mesh at a given target element size, with the measured wall thickness written into PSHELL properties. Covers both meshing engines - `mesh.Mesh` (Shell Mesh > Mesh) and a Batch Mesh session - driven by the user's `.ansa_mpar` / `.ansa_qual` files, plus the geometry repair that makes `base.Skin` succeed. This skill should be used for requests such as "抽中面并划 5mm 网格", "钣金件抽中面并赋予正确厚度", "用批处理/批处理网格划网格", "midsurface + shell mesh for the sheet metal parts", "把 CAD 面模型变成壳网格并导出求解文件", or whenever an ANSA database full of closed thin-walled surfaces must become a solver-ready shell mesh. Also use it when a mesh built by this skill is judged worse than one built by hand in ANSA, or when a user questions whether their mpar/qual files were honoured.
 agent_created: true
 ---
 
@@ -31,6 +31,34 @@ assembly Skin rejected 13 of 68 parts while `MidSurfAuto` went on to build a cle
 uniform mesh on 10 of them. Treat a Skin failure as *unknown* and retry with
 MidSurfAuto; only call a part non-shellable when both fail.
 
+**Repair the geometry before giving up on Skin.** Verified on ANSA 24.1.2: two
+CATParts at 417 and 442 faces returned 0 for every `max_thickness` up to 40 mm,
+then produced 135 and 147 middle-surface faces with the correct gauges (1.709 mm)
+after
+
+```python
+base.CheckAndFixGeometry(input=part,
+                         options=["CRACKS", "SINGLE CONS", "OVERLAPS", "NEEDLE FACES"],
+                         fix_options=[1, 1, 1, 1],
+                         return_one_matrix_for_every_error=False,
+                         remaining_errors=True)
+```
+
+- Run the repair **before** Skin, and do **not** follow it with
+  `base.RebuildTopology` - on B0025 that dropped Skin straight back to 0.
+  `RebuildTopology` alone also failed where `CheckAndFixGeometry` succeeded, so
+  they are not interchangeable.
+- `CheckAndFixGeometry` returns `None` when it finds nothing to report; it still
+  normalises topology, so a `None` return does not mean the call did nothing.
+- Repair may split faces (`RebuildTopology` took 417 faces to 551). Pass the
+  **part** rather than the face list to keep the change minimal.
+- `base.Skin(apply_thickness=True, new_pid=True, new_part=True)` puts the middle
+  surface in its own part and gives it a PSHELL whose `T` is the measured wall.
+  A Batch Mesh run over that part inherits the same PSHELL, so the mesh carries
+  the measured gauge with no extra write step - verify it anyway, a fresh
+  property with the placeholder 1.0 mm is the failure mode to look for.
+
+
 ## Prerequisites
 
 - The `ansa` MCP server must be connected: `ansa_status` reports `connected: true`.
@@ -42,14 +70,259 @@ MidSurfAuto; only call a part non-shellable when both fail.
 - Everything below is verified on **ANSA 23.0.0 with a NASTRAN deck**. On another
   release, re-verify at gate 1 before trusting the rest.
 
+## Running without the MCP (batch mode)
+
+When the `ansa` MCP server is not loaded, drive the same scripts from the ANSA
+batch launcher. Verified on **ANSA 24.1.2**:
+
+```bat
+ansa64.bat -nogui -nolauncher -exec "load_script: 'D:/work/probe.py'"
+```
+
+- The script runs at top level and ANSA **quits by itself** afterwards - no
+  `session.Exit`, and `session.Exit` does not exist.
+- Do **not** use `-execscript "file.py|main()"`: the `|` is eaten by `cmd.exe`
+  and the tail of the argument is executed as a separate command.
+- The `ansa64.bat` launcher breaks on arguments containing spaces, so keep every
+  path space-free and start it from PowerShell (Git Bash mis-quotes the bat path).
+- Importing several CAD files needs `base.Open()` + `base.SaveAs()` per file, then
+  `utils.Merge(filename=..., model_action="merge_model")`. `base.Open()` a second
+  time **replaces** the database instead of merging - measured: three CATParts
+  opened in a row left 69 faces, not 928.
+
+## Two meshing engines - `mesh.Mesh` vs Batch Mesh
+
+When the user supplies `.ansa_mpar` / `.ansa_qual`, meshing must run through one
+of these two engines, not through `MidSurfAuto(length=...)`, which ignores both
+files. **Neither engine extracts midsurfaces** - build the middle-surface FACEs
+first (`base.Skin`, see above), then mesh them.
+
+Both are ready to call in `scripts/mesh_engine.py`: set `PARAMS["engine"]` to
+`"mesh"` or `"batchmesh"` and exec the file. Verified on ANSA 24.1.2.
+
+| | `mesh.Mesh` (Shell Mesh > Mesh) | Batch Mesh session |
+|---|---|---|
+| call | `mesh.Mesh(faces)` | `GetNewSession` + `ReadSession*` + `RunMeshingScenario` |
+| feature treatment | full, including geometry-altering ones | as configured, no interactive change option |
+| scale | one database at a time | many parts, parallel, repeatable |
+
+**Do not read a quality difference into the engine choice.** In one session on
+one Skin result (B0027), `mesh.Mesh` gave 204 elements / aspect max 2.864 the
+first time and 218 / 2.345 the second time after deleting the mesh, while a Batch
+Mesh run straight after gave 208 / 2.861. The gap that looks like "engine A is
+better" is the **run order**: with `change_option = macro perimeters` the first
+pass rewrites the perimeter node distribution, so the second pass starts from a
+different perimeter. Compare engines only on the first mesh of a fresh Skin, or
+the conclusion is measuring the second pass.
+
+Two consequences:
+
+- A re-mesh of a saved database is always a *second* pass. A Batch Mesh that must
+  reproduce first-pass numbers has to run in the session where `Skin` executed.
+- When reporting a comparison, state which pass each number came from, otherwise
+  the reader attributes it to the engine.
+
+### `mesh.Mesh` - the interactive generator
+
+```python
+from ansa import base, mesh
+mesh.ReadMeshParams(mpar)                  # must both be called: the mesh
+mesh.ReadQualityCriteria(qual)             # generator reads the active set
+base.SetANSAdefaultsValues({"mesh_change_option": "macro perimeters"})
+mesh.Mesh(faces)                           # list of FACE entities
+```
+
+`mesh_change_option` is an **ANSA default, not part of the .ansa**:
+
+| value | behaviour |
+|---|---|
+| `macro perimeters` | perimeters may be joined/released, every feature treatment applies including geometry-altering ones (fillet sharpening) |
+| `perimeter grids` | only perimeter node distribution changes; feature treatments except the geometry-altering ones |
+| `mesh` | perimeters and their grids untouched, only interior mesh, no feature treatment |
+
+Set it explicitly every run - a session that reopens a saved database inherits
+whatever the machine happens to have.
+
+### Batch Mesh session
+
+```python
+from ansa import mesh, batchmesh
+mesh.ReadMeshParams(mpar)
+mesh.ReadQualityCriteria(qual)
+ses  = batchmesh.GetNewSession("BM_5MM")
+batchmesh.ReadSessionMeshParams(ses, mpar)
+batchmesh.ReadSessionQualityCriteria(ses, qual)
+scen = batchmesh.GetNewMeshingScenario("SC_5MM", "PARTS")
+batchmesh.AddPartToMeshingScenario(parts_with_faces, scen)
+batchmesh.AddSessionToMeshingScenario([ses], scen)
+batchmesh.RunMeshingScenario(scen, time_limit=20)
+```
+
+- Give it **parts that own FACEs**. A part holding only shells produces 0
+  elements, because the session erases existing mesh
+  (`existing_mesh_treatment = Erase`) and has no macro to re-mesh.
+- `GetSessionMeshParamsName([ses])` returns `""` even after a successful
+  `ReadSessionMeshParams` - do not use it as proof; use the roundtrip below.
+- `mesh.FEMToSurf` is only a bridge for `MidSurfAuto` shells and leaves faceted,
+  non-fused geometry behind; it needs `mesh.AutoPaste(shells=..., distance=0.1,
+  allow_element_collapse=True)` afterwards. Prefer `base.Skin` FACEs instead.
+
+### Checks that apply to both
+
+- **Prove the files were loaded**, do not trust the return code: call
+  `mesh.SaveMeshParams(tmp)` / `mesh.SaveQualityCriteria(tmp)` and grep the
+  roundtrip for `target_element_length` and the criteria lines. A decisive test is
+  to edit a copy of the mpar (e.g. target 5 -> 8) and confirm the mesh edge length
+  follows; on a 12-face panel that moved p50 from 4.78 to 6.71 mm.
+- An mpar that differs from the ANSA factory default in only a couple of lines
+  produces a mesh almost identical to "no file at all" - that is the file, not a
+  failed load. Diff against `mesh.SaveMeshParams()` on a fresh session before
+  concluding anything about whether the file was used.
+- **After reopening a saved `.ansa`, `CollectEntities(deck, prop_or_part, "SHELL")`
+  returns 0** even though the elements are there. Link shells to properties
+  through the element card's `PID` field instead, or a verification script will
+  falsely report "no properties / no thickness".
+- Check `placeholder_gauge`: any meshed PSHELL still at `T = 1.0` means the gauge
+  never arrived from `Skin`.
+- One part per file: `session.New("discard")` + `base.Open(cat)` per part, then
+  `base.SaveAs(<part>.ansa)`. Keep the original solid FACEs and the `_MIDSURF`
+  part so geometry and mesh are both in the file.
+
 ## Workflow
+
+`scripts/process_part.py` runs the whole chain for one part - classify, repair,
+Skin, name the properties, mesh, save - and returns one `RESULT`. Use it unless a
+step needs a decision in between; the individual steps are below.
+
+### 0. Classify before doing anything
+
+`base.DetectSolidDescription(estimate_thickness=True)` is the sheet-metal test and
+the gauge estimate in one call. It returns a list whose first element is
+`{thickness: area_fraction}`; a dominant entry means a thin-walled body.
+
+| part | dominant wall | fraction | Skin afterwards |
+|---|---|---|---|
+| 417 faces | 1.709 mm | 98.2% | fails until the geometry is repaired |
+| 442 faces | 1.709 mm | 98.1% | fails until the geometry is repaired |
+| 69 faces | 2.657 mm | 100% | succeeds directly |
+
+- Do **not** pass `estimate_thickness=True` together with
+  `return_percentage=True` - it raises "can not be both True".
+- `separate_connectivity=False` with `return_percentage=False` returns a bare
+  `1` / `0`, which is not a usable verdict; keep connectivity separation on.
+- The estimated gauge matched what Skin and MidSurfAuto measured to three
+  decimals on all three parts, so it is a real measurement, not a guess.
+
+### 0b. Property naming
+
+Default rule, override with `code` in `PARAMS`:
+
+```
+B0029_A0072600089.CATPart      -> code A0072600089
+  original solid PSHELL        -> A0072600089_origin
+  middle-surface PSHELL        -> A0072600089_T171      (1.709 mm)
+```
+
+The gauge suffix is the measured wall in **0.01 mm, rounded half up**:
+1.702 -> 170, 1.709 -> 171, 1.720 -> 172, 2.657 -> 266. Use
+`floor(T*100 + 0.5)`, not `round()`, so 1.705 does not fall to the even value.
+Rename **after** Skin (the middle-surface property does not exist before it) and
+before meshing, so the exported ELSET/section names carry the code.
+
+### 0c. Exporting the Nastran deck
+
+`base.OutputNastran(filename=...)` writes MAT1 **only when the material's
+`DEFINED` flag is `YES`**. A CATPart import creates a placeholder material with
+`DEFINED = NO`, so the deck comes out with `PSHELL` pointing at `MID 1` and no
+`MAT1` card - it will not run, and nothing in the export warns about it.
+
+```python
+for m in base.CollectEntities(deck, None, "__MATERIALS__"):
+    base.SetEntityCardValues(deck, m, {"DEFINED": "YES"})
+base.SaveAs(ansa)                    # so the .ansa agrees with the deck
+base.OutputNastran(filename=nas)
+```
+
+Check the result, not the return code: `grep '^MAT1' file.nas` must find a line
+like `MAT1           1 210000.             0.3  7.85-9`. Creating a brand-new MAT1
+and pointing `PSHELL.MID1` at it is **not** enough - a fresh entity has the same
+`DEFINED = NO` problem.
+
+### 0d. Batch runs must end with an exception list
+
+`scripts/process_folder.py` walks a folder of CATParts and returns
+`RESULT["summary"]` with `by_status` and `issues`. **Reporting only the parts
+that succeeded is not acceptable** - a skipped part is invisible in a success
+count.
+
+| status | meaning | what the user must be told |
+|---|---|---|
+| `done` | shell mesh written | element count, gauge, edge p50 |
+| `not_sheet_metal` | dominant wall below the area threshold, or thicker than `max_sheet_thickness` | the measured wall and why it was rejected |
+| `skin_failed` | Skin returned no faces even after `checkfix` and `rebuild` | the part needs manual middlesurfacing (or `MidSurfAuto` as a fallback) |
+| `geometry_only` | mesh requested but nothing was produced | same as above |
+| `error` | exception | the exception text |
+
+Two classification traps found on a real folder:
+
+- **A thick part can look 100% thin.** `R007_A0072600643_WELD.CATPart` reported a
+  single thickness covering 100% of its faces - 7.453 mm. Area fraction alone
+  calls that sheet metal. Keep `max_sheet_thickness` (default 4.0 mm) in the
+  verdict.
+- **The file-name suffix is not part of the number.**
+  `R007_A0072600643_WELD` must become `A0072600643`, not `A0072600643_WELD`.
+  Take the **second underscore token** (`stem.split("_")[1]`), not everything after
+  the first underscore: a digit-pattern regex such as `[A-Za-z]\d{7,10}` also
+  throws away the whole `A007S030430` family (118 of 264 parts in one folder).
+  When several files share a number, the extra ones get a `__<B/O/R index>`
+  suffix; that index regex must allow any letter prefix, not just `B`.
+
+A file that fails must still be saved as geometry, so the user can open it and
+see what is missing - do not leave an empty directory entry.
+
+### 0e. Four defects a 289-part run exposed
+
+These cost real parts on a full BIW folder. Check them before trusting any batch.
+
+1. **`Skin` has three buckets, not one.** The return dict carries `skinned`,
+   `check` and `failed`. A group in `check` already has its middle surface, ANSA
+   only wants it reviewed - counting `skinned` alone writes off good parts.
+   Measured: 4 of 9 "skin_failed" parts had 58~5 000 `check` faces and meshed fine
+   once counted (`B0318` -> 10 712 elements).
+   ```python
+   n = sum(len(g.get("skin") or []) for k in ("skinned", "check")
+           for g in (ret.get(k) or []))
+   ```
+2. **Every retry leaves a part behind.** `Skin(new_part=True)` creates a new part
+   per group even when it reports `failed`/`check`. Retry twice and the database
+   holds three stacked middle surfaces; the mesh then lands on all three. Snapshot
+   the part ids before the call, keep only the last attempt's parts, delete the
+   rest.
+3. **`DetectSolidDescription` returns a negative sentinel when it cannot
+   estimate.** `-1.0` means "no consistent offset pair", not "thick". Treating it
+   as a thickness classifies a real panel as not-sheet-metal and silently drops
+   it. `T <= 0` -> estimate unknown, attempt Skin anyway and let the measured
+   gauge decide.
+4. **Output names must not depend on processing order.** A folder can hold one
+   part number at several assembly positions (four `B0343..B0349_A0072600170`
+   here). If the "first file gets the plain name" rule is applied to a list that
+   was sorted by *size*, two runs disagree and one part overwrites the other's
+   `.ansa`. Compute the stem map once from the **name-sorted** full file list, and
+   hand the same map to every worker:
+   `A0072600170`, `A0072600170__B0345`, `A0072600170__B0347` ...
+
+For a folder this size also: write one JSON line per part to `_progress.jsonl`,
+resume by re-reading it, and run 3 ANSA workers on disjoint file lists (40 parts
+each) - a single process needed ~80 min for the last 130 parts, three workers
+brought that under 35. Three instances used ~0.4 GB each; 16 cores / 64 GB is
+comfortable.
 
 ### 1. Inspect before touching anything
 
 Exec `scripts/inspect_model.py` inside ANSA and read `RESULT`:
 
 ```python
-SKILL = r"C:\Users\<you>\.workbuddy\skills\ansa-midsurface-mesh"
+SKILL = r"C:\Users\Dongmiao\.workbuddy\skills\ansa-midsurface-mesh"
 exec(open(SKILL + r"\scripts\inspect_model.py", encoding="utf-8").read(), globals())
 RESULT
 ```
@@ -75,7 +348,7 @@ PARAMS = {
     "output_dir": r"D:/proj/mesh_out",
     "variable_thickness_policy": "drop",   # block | write_median | drop
 }
-SKILL = r"C:\Users\<you>\.workbuddy\skills\ansa-midsurface-mesh"
+SKILL = r"C:\Users\Dongmiao\.workbuddy\skills\ansa-midsurface-mesh"
 exec(open(SKILL + r"\scripts\midsurface_mesh.py", encoding="utf-8").read(), globals())
 RESULT
 ```
@@ -227,6 +500,18 @@ reliable selector is the newly created `@SKIN` property: collect its faces.
 
 - `base.GetShellThickness(deck, entity)` takes the **entity**, not the id. Passing an
   id raises "argument 2 must be an ansa.base.Entity".
+- GRID coordinates are card fields `X1/X2/X3`, not `X/Y/Z` (Nastran deck); shell
+  connectivity is `G1..G4`. `GetEntityCardValues` takes a single entity, so a node
+  coordinate map needs one call per grid. Read connectivity with
+  `CollectEntities(deck, shell, "GRID")` instead of guessing field names.
+- `base.ElementQuality` resolves `ASPECT`, `SKEW`, `WARP`, `TAPER`, `CRASH`,
+  `SQUISH`; `JACOBIAN`, `MIN_LENGTH`/`MAX_LENGTH`, `MINLEN`/`MAXLEN`, `ANGLE_*`
+  all come back as the string `'error'`. For those, use
+  `base.CalculateOffElements(details=True)`, which returns ANSA's own off-element
+  counts per criterion (`{'TOTAL OFF': ..., 'MIN LENGTH': ..., 'JACOBIAN': ...}`).
+- `base.checks.mesh.MeshQuality().execute(code)` takes an int
+  (`EXEC_ON_ALL` / `EXEC_ON_MODEL` / ...) and returns a list of `CheckReport`;
+  the report exposes `status` and `issues`, not per-criterion counts.
 - `base.checks` has only `general`, `geometry`, `mesh`, `penetration`. There is no
   `base.checks.shell`.
 - Property names containing spaces or semicolons make the exported Abaqus `ELSET`
@@ -246,8 +531,16 @@ reliable selector is the newly created `@SKIN` property: collect its faces.
 
 ## Bundled resources
 
+- `scripts/process_part.py` - the one-part pipeline: classify, repair, `Skin`,
+  property naming, mesh, save `.ansa` + export `.nas`.
+- `scripts/process_folder.py` - folder driver around `process_part.py`:
+  `_progress.jsonl`, resume, chunking, worker subsets, and the mandatory
+  exception list.
+- `scripts/mesh_engine.py` - meshing only (`mesh.Mesh` or a Batch Mesh session),
+  switched by `PARAMS["engine"]`.
 - `scripts/inspect_model.py` - read-only model survey: entity counts, per-part
   bounding box and area, property thickness, deck verdict.
-- `scripts/midsurface_mesh.py` - the two-pass build with verification and export.
+- `scripts/midsurface_mesh.py` - legacy two-pass build (`MidSurfAuto` + measured
+  thickness) for runs that have no `.ansa_mpar` / `.ansa_qual`.
 - `references/ansa-api-verified.md` - exact signatures, what was verified on which
   release, and the negative results worth not repeating.

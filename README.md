@@ -18,11 +18,14 @@
 
 | 路径 | 内容 |
 |---|---|
-| `ansa_mcp_server.py` | FastMCP 服务，15 个工具 |
+| `ansa_mcp_server.py` | FastMCP 服务，19 个工具 |
 | `ansa_iap.py` | IAP 协议实现（重写了官方参考实现） |
 | `ansa_ledger.py` | 写操作幂等台账 |
 | `tests/` | 三层测试，见 [tests/README.md](tests/README.md) |
 | `skills/ansa-midsurface-mesh/` | 抽中面 + 划网格 Skill |
+| `skills/ansa-midsurface-mesh/scripts/process_part.py` | 单件全流程：钣金判定 → 修复 → `Skin` → property 命名 → 划网格 → 保存 |
+| `skills/ansa-midsurface-mesh/scripts/process_folder.py` | 目录批量：`_progress.jsonl` 断点续跑、分块、并行 worker、异常清单 |
+| `skills/ansa-midsurface-mesh/scripts/mesh_engine.py` | 两条网格路线（`mesh.Mesh` / Batch Mesh），由 `.ansa_mpar` + `.ansa_qual` 驱动 |
 
 ## 工作原理
 
@@ -215,34 +218,77 @@ evidence: transport=ok · script=returned · model=GRID +1 · engineering=unveri
 用法（在 `ansa_run_python` 里执行）：
 
 ```python
+# 单件：判定 → 修复 → Skin 抽中面 → property 命名 → 划网格 → 存 .ansa + .nas
 PARAMS = {
-    "source": r"D:/proj/model.ansa",
-    "target_length": 5.0,
-    "max_thickness": 3.0,
-    "output_dir": r"D:/proj/mesh_out",
+    "catpart": r"D:/proj/B0029_A0072600089.CATPart",
+    "engine": "mesh",                       # "mesh" | "batchmesh"
+    "mpar": r"D:/proj/5MM.ansa_mpar",
+    "qual": r"D:/proj/5MM.ansa_qual",
+    "save": r"D:/out/A0072600089.ansa",
+    "nas": r"D:/out/A0072600089.nas",
 }
-exec(open(r"<skill>/scripts/midsurface_mesh.py", encoding="utf-8").read(), globals())
+exec(open(r"<skill>/scripts/process_part.py", encoding="utf-8").read(), globals())
 RESULT
 ```
 
-两遍式流程：
+单件流程五步：
 
-- **Pass A**：逐件 `base.Skin(apply_thickness=True, …)` 测壁厚，同时判定是否薄壁件
-  （返回 0 即不是，保持原样）
-- **Pass B**：重载干净模型，`base.MidSurfAuto(length=…)` 建网格（只有它认目标尺寸），
-  `GetShellThickness` 逐单元读厚，取中位数回写 PSHELL
+1. `base.DetectSolidDescription(estimate_thickness=True)` 一次调用同时给出**钣金判定**和壁厚估计；
+   面积占比 <50% 或主导厚度 >4 mm 判为非钣金，直接跳过（返回 `-1.0` 表示估计失败，此时仍尝试抽中面）。
+2. `base.Skin` 抽中面；抽不出时依次做 `CheckAndFixGeometry` → `RebuildTopology` 两级修复再试。
+3. property 按编号重命名：原始几何 `A0072600089_origin`，中面 `A0072600089_T171`（厚度 ×100 四舍五入）。
+4. `mesh.Mesh` 或 Batch Mesh 划网格，由 `.ansa_mpar` + `.ansa_qual` 驱动。
+5. 存 `.ansa`（原始几何 + 中面 + 网格）并导出 `.nas`（材料卡 `DEFINED=YES`，否则 MAT1 会被静默丢掉）。
 
-`dry_run=True` 只做 Pass A，先看厚度表再决定。
+```python
+# 批量：一个目录几百件，断点续跑
+PARAMS = {
+    "folder": r"D:/proj/car_model_first",
+    "out_dir": r"D:/out",
+    "engine": "mesh",
+    "mpar": r"D:/proj/5MM.ansa_mpar",
+    "qual": r"D:/proj/5MM.ansa_qual",
+    "nas": True,
+    "limit": 25,          # 本次最多处理 25 件，0 = 不限
+    "resume": True,       # 按 _progress.jsonl 续跑
+}
+exec(open(r"<skill>/scripts/process_folder.py", encoding="utf-8").read(), globals())
+RESULT["summary"]["issues"]      # 必须汇报，不能只报成功数
+```
 
-在保险杠横梁总成（3280 个 CAD 面 / 17 个零件）上的实测结果：
+批量跑大目录的做法：每件追加一行到 `_progress.jsonl`；`limit` 分块；需要更快时开 3 个 ANSA 实例，
+用 `only=<文件名清单>` 切不相交的子集、各自的 `_progress_w<n>.jsonl`、`write_summary=False`
+（并发重写同一个 CSV 会冲突）。
 
-| 项 | 值 |
-|---|---|
-| 识别为钣金的零件 | 10 / 17（厚度 1.4 / 1.8 / 2.0 / 2.8 mm） |
-| 壳单元 | 22,063（quad 85.8%） |
-| 节点 | 22,681 |
-| 等效边长 p50 | 4.76 mm（目标 5.0） |
-| 耗时 | 278 s |
+在整车 553 个 CATPart 上的实测结果：
+
+| 批次 | 零件 | 出网格 | 非钣金 / 抽不出中面 | 壳单元 |
+|---|---|---|---|---|
+| `car_model_first` | 289 | 278（96.2%） | 6 / 5 | 1 261 638 |
+| `BIW_总装_553` 剩余 | 264 | 103（39.0%） | 65 / 96 | 375 305 |
+
+第二批成功率低是零件构成决定的：`B` 类车身钣金 60 件里 53 件成功（88%），
+其余是 `O`（连接件/支架/实体，186 件）、`R`（焊点/胶，13 件）、`G`（5 件厚板），本就不适合抽中面。
+
+### 两条网格路线
+
+`process_part.py` 是单件完整流水线（钣金判定 → 几何修复 → `Skin` 抽中面 → property 命名 → 划网格 → 保存）；
+`mesh_engine.py` 只负责划网格，用 `PARAMS["engine"]` 切换。两条都吃 `.ansa_mpar` + `.ansa_qual`，
+都**不负责抽中面**。
+
+`midsurface_mesh.py` 是最早的两遍法脚本（`MidSurfAuto` 建网格 + `GetShellThickness` 回写厚度），
+在没有 `.ansa_mpar` / `.ansa_qual` 时仍可用；有配置文件时应走 `process_part.py`，否则配置文件不会被使用。
+
+| engine | 对应 GUI | 特点 |
+|---|---|---|
+| `"mesh"` | Shell Mesh > Mesh | 特征处理全生效，含会改几何的圆角锐化；`mesh_change_option` 控制 Change 档位 |
+| `"batchmesh"` | Batch Mesh Manager | 多件并行、可重复，适合整车批量 |
+
+**不要用网格指标去比较这两个引擎**：同一份中面、同一次会话里，`mesh.Mesh` 第一遍 204 单元 / aspect 2.864，
+删掉再划第二遍 218 / 2.345，批处理第三遍 208 / 2.861。差异来自"第几遍"（`change_option = macro perimeters`
+允许改写周长分布），不是引擎；要比只能在同一个 Skin 结果的**第一遍**上比。
+
+判据文件确实生效的验证办法：复制一份 mpar 把 `target_element_length` 改成 8，网格边长应随之变化（实测 4.78 → 6.71 mm）。
 
 详见 [skills/ansa-midsurface-mesh/SKILL.md](skills/ansa-midsurface-mesh/SKILL.md) 和
 [references/ansa-api-verified.md](skills/ansa-midsurface-mesh/references/ansa-api-verified.md)，
