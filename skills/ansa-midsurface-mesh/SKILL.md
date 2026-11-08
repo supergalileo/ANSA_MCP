@@ -31,6 +31,20 @@ assembly Skin rejected 13 of 68 parts while `MidSurfAuto` went on to build a cle
 uniform mesh on 10 of them. Treat a Skin failure as *unknown* and retry with
 MidSurfAuto; only call a part non-shellable when both fail.
 
+`scripts/rescue_midsurf.py` is that second pass. It walks a folder, runs
+`MidSurfAuto` per part, reads the gauge back with `GetShellThickness` (the
+property is left at the 1.0 default - see the API notes), writes the median, and
+saves `.ansa` + `.nas`:
+
+    PARAMS = {"folder": ..., "out_dir": ..., "length": 5.0, "limit": 0}
+    exec(open(r"<skill>/scripts/rescue_midsurf.py", encoding="utf-8").read(), globals())
+
+Run it in small chunks. `MidSurfAuto` meshing a large part can kill the ANSA
+process outright - measured twice on a 553-part BIW folder, once at 21 861 shells
+(5 min, survived) and once on a 350-face bracket. Every finished part is appended
+to `_rescue_progress.jsonl` before the next one starts, so a crash costs one part
+and the next run resumes.
+
 **Repair the geometry before giving up on Skin.** Verified on ANSA 24.1.2: two
 CATParts at 417 and 442 faces returned 0 for every `max_thickness` up to 40 mm,
 then produced 135 and 147 middle-surface faces with the correct gauges (1.709 mm)
