@@ -42,6 +42,13 @@ Beyond `Skin` and Casting, the API also exposes `base.SkinSingleTRB`,
 `base.CurvesMiddle` (single face / single curve). QA helpers:
 `mesh.CheckMiddleSurface`, `mesh.CheckMiddleMesh`, `mesh.GetMiddleMeshQualityScore`.
 
+`MidSurfExtrusion` is a dead end as an automatic generator: it takes **no
+arguments**, returns a count (3 on a crash box, 1 on a sill insert), and creates
+**zero** faces - tested on two parts, with and without a prior selection
+(`base.SelectEntities` does not exist in this build). It also burned 35 s on the
+sill insert. Do not spend time on it again; `MiddleGeometry` at tol 2.0 is the
+usable geometry path.
+
 ## Why long batches must not go through the MCP server
 
 Measured on a 540-part BIW folder, four disconnects in one afternoon. The chain:
