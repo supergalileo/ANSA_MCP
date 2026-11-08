@@ -1,0 +1,124 @@
+# Field notes - measurements, war stories, and what not to repeat
+
+Companion to `SKILL.md`. Everything here was measured; the rules derived from it
+live in `SKILL.md`, the raw numbers and the story of how each was found live here.
+
+## Casting second pass - the numbers
+
+Seven parts a 553-part BIW folder had rejected via `Skin`, run through
+`scripts/casting_midsurf.py` with `engine="mesh"` and the project's 5 mm
+`.ansa_mpar` / `.ansa_qual`:
+
+| part | faces in | mid faces | face rate | shells | gauge mm | time |
+|---|---|---|---|---|---|---|
+| B0360 托架 | 322 | 125 | 100% | 1 486 | 1.52 | 7.1 s |
+| B0367 横梁 | - | 20 | 100% | 21 298 | 1.52 | 20.0 s |
+| B0504 | - | 34 | 100% | 765 | 2.91 | 4.9 s |
+| B0571 端部托架 | - | 33 | 100% | 779 | 2.91 | 4.7 s |
+| B0870 加强托架 | 354 | 141 | 100% | 3 002 | 1.02 | 7.7 s |
+| B1028 托架 | 102 | 10 | 100% | 96 | 3.42 | 2.9 s |
+| O081 后安装托架 | 145 | 21 | 100% | 1 256 | 1.37 | 2.8 s |
+
+50 s for the seven, 6 `rescued` + 1 `rescued_var` (B0367, p2-p98 spread 34% - the
+rear rail genuinely varies, the median is written and the property renamed
+`*_suspect`).
+
+For comparison, `MidSurfAuto` on four of the same parts: 33 s, 324 s, 14 s, 14 s -
+370 s total, and the process then died inside the mesher.
+
+## Why MidSurfAuto cannot be the second pass here
+
+`base.MidSurfAuto` creates a part called `Middle Skin Shells` holding 1306 SHELL
+and **0 FACE** (B0360, verified by reopening the saved `.ansa`). It is a mesher.
+Its elements cannot be re-meshed by another engine, cannot be handed to a Batch
+Mesh session, and carry a mesh from a third algorithm that no `.ansa_mpar`
+controls.
+
+ANSA logs `Middle-Casting time : N s` during every MidSurfAuto call - that is the
+Casting routine doing the surface work. `base.MiddleGeometry(faces, tol)` is the
+same routine with the meshing removed, which is why the split works: Casting finds
+the surface, `mesh.Mesh` or Batch Mesh builds the elements.
+
+## Engine comparison - and why most comparisons are wrong
+
+In one session on one `Skin` result (B0027): `mesh.Mesh` gave 204 elements /
+worst aspect 2.864; a second `mesh.Mesh` after deleting the mesh gave 218 / 2.345;
+a Batch Mesh run straight after gave 208 / 2.861.
+
+The apparent "engine A is better" gap is the **run order**. With
+`change_option = macro perimeters` the first pass rewrites the perimeter node
+distribution, so every later pass starts from different perimeters. Compare
+engines only on the first mesh of a fresh Skin, and say which pass a number came
+from.
+
+## The four defects a 289-part run exposed
+
+1. **`Skin` has three buckets.** The return dict carries `skinned`, `check` and
+   `failed`. A `check` group already has its middle surface - ANSA only wants it
+   reviewed. Counting `skinned` alone writes off good parts: 4 of 9 parts reported
+   as `skin_failed` held 58-5 000 `check` faces and meshed fine (`B0318` ->
+   10 712 elements).
+   ```python
+   n = sum(len(g.get("skin") or []) for k in ("skinned", "check")
+           for g in (ret.get(k) or []))
+   ```
+2. **Every retry leaves a part behind.** `Skin(new_part=True)` creates a part per
+   group even when it reports `failed`/`check`. Retry twice and the database holds
+   three stacked middle surfaces, and the mesh lands on all three. Snapshot the
+   part ids first, keep the last attempt, delete the rest.
+3. **`DetectSolidDescription` returns a negative sentinel** (`-1.0`) when it cannot
+   estimate: "no consistent offset pair", not "thick". `T <= 0` means the estimate
+   is unknown - try Skin anyway.
+4. **Output names must not depend on processing order.** One part number can sit at
+   several assembly positions (four `B0343..B0349_A0072600170`). Computing the
+   stem map from a size-sorted list makes two runs disagree and one part overwrite
+   another's `.ansa`. Compute it once from the **name-sorted** full list and hand
+   the same map to every worker.
+
+## Verification gates (apply to any of the pipelines)
+
+| gate | expectation |
+|---|---|
+| shell count | non-zero and close to `total_area / target^2` |
+| `edge_p50` | within ~6% of target; 20%+ means the target length never applied |
+| `edge_p10`/`p90` | roughly target x (0.8 ... 1.05) |
+| quad ratio | typically 0.8-0.95 |
+| per-part `T` | equals the measured value, and is uniform |
+| `elements_without_T` | **0 for a deliverable deck**, read from the PSHELL state |
+| `placeholder_gauge` | any PSHELL still at `T = 1.0` means the gauge never arrived |
+| faces left | only for parts that were never shelled |
+
+`edge_p50` a few percent under target is normal: the mesher projects onto curved
+geometry and `sqrt(area)` is a proxy, not an edge length.
+
+## min/max is not reproducible - use p2/p98
+
+Two instances of `JA10-34-801` in class5.stp have identical geometry and identical
+median (3.25 mm), yet one sampled `[3.0, 3.25]` and passed while the other sampled
+`[2.83, 3.25]` and was blocked. Same part, opposite verdicts, from a 40-element
+min/max window. `JA10-34-803` had a median of 3.23 mm with one mis-paired element
+at 20.137 mm; min/max lets that single element condemn the part.
+
+## The `block` policy hazard
+
+`block` keeps shells whose gauge spread exceeded tolerance and leaves `T` at the
+mesher default 1.0 - and that value **is** what ships. In class5.stp a `block` run
+put 18 298 of 77 034 elements (23.8%) on a placeholder 1.0 mm gauge, invisible to
+every other metric. `drop` is the only policy that yields a deck analysable as-is.
+
+## Element size - negative results worth not repeating
+
+`mesh.BatchGenerator()` ignores the target length. Editing `target_element_length`
+through `SaveMeshParams`/`ReadMeshParams` has no effect (a 10 mm setting still
+produced 4.85 mm elements on a 5 420 mm2 face). `mesh.SetMeshParamTargetLength`
+rejects every label tried (`''`, `'default'`, `'Target Length'`, `'shell'`, ...).
+Only `MidSurfAuto(length=...)` and the mpar-driven engines honour a size.
+
+## 553-part BIW folder - classification counts
+
+After the name/part-number gate (see `SKILL.md`): 553 parts = 383 `done`,
+129 `hardware`, 29 `not_sheet_metal`, 12 `skin_failed`. The `A007S` part-number
+block held 118 parts and every one was a standard part; the Chinese Nomenclature
+agreed on 115 of them and covered the 3 with unread names. Eight large standard
+parts (threaded bushings 11 636 mm2, guide sleeves 37 387 mm2) were missed by the
+area rule alone and recovered by the name rule.
