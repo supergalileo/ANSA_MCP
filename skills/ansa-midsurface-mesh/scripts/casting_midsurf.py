@@ -6,7 +6,7 @@
         "engine":  "mesh",        # "mesh" | "batchmesh"  - only these two mesh here
         "mpar":    r"D:/proj/5MM.ansa_mpar",
         "qual":    r"D:/proj/5MM.ansa_qual",
-        "thickness_tolerance": 1.0,
+        "thickness_tolerance": 2.0,      # 1.0 silently drops walls that differ by more
         "max_thickness": 6.0,
         "limit":   0,             # parts this invocation, 0 = all
         "resume":  True,
@@ -130,7 +130,7 @@ def cast_one(cat, params):
         log.update({"status": "casting_failed", "note": "没有实体几何"})
         return log
 
-    ret = base.MiddleGeometry(faces, float(params.get("thickness_tolerance", 1.0)))
+    ret = base.MiddleGeometry(faces, float(params.get("thickness_tolerance", 2.0)))
     d = ret[0] if isinstance(ret, list) and ret else (ret if isinstance(ret, dict) else {})
     mid = list(d.get("result_faces") or [])
     log.update({"mid_faces": len(mid),
@@ -139,6 +139,17 @@ def cast_one(cat, params):
                 "problem_faces": len(d.get("problematic_faces") or [])})
     if not mid:
         log.update({"status": "casting_failed", "note": "Casting 未产生中面，判定为真实体"})
+        return log
+
+    # A face rate below 90% means Casting dropped walls, not that the part is
+    # simple. Measured: a crash box at thickness_tolerance=1.0 returned 14 of 84
+    # faces (16.6%) and meshed into 12 disconnected patches; the same part at 2.0
+    # returned 99.9%. Without this gate the part still looks "rescued".
+    rate = d.get("faces_success_rate")
+    if rate is not None and float(rate) < float(params.get("min_face_rate", 90.0)):
+        log.update({"status": "casting_partial",
+                    "note": "Casting 只抽出 %.1f%% 的面，阈值 %.0f%%，调 thickness_tolerance 重跑"
+                            % (float(rate), float(params.get("min_face_rate", 90.0)))})
         return log
 
     mpar, qual = params.get("mpar"), params.get("qual")

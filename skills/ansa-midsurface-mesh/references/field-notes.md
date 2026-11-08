@@ -3,6 +3,45 @@
 Companion to `SKILL.md`. Everything here was measured; the rules derived from it
 live in `SKILL.md`, the raw numbers and the story of how each was found live here.
 
+## Casting leaves the surface in pieces - two separate causes
+
+Found on the delivered 540-part folder: 7 of 24 Casting results were fragmented
+(one crash box had **12 disjoint patches**). Two causes, both measurable:
+
+**1. `thickness_tolerance` too tight silently drops walls.** The rate that
+`MiddleGeometry` returns (`faces_success_rate`) is the tell:
+
+| part | tol 1.0 | tol 2.0 |
+|---|---|---|
+| O044 crash box | **16.6%** of faces, 2 075 shells, 12 patches | 99.9%, 8 218 shells, 9 patches |
+| B0736 sill insert | 100%, 28 068, 6 | 97.7%, 28 822, 5 |
+| O025 crash box | 7 patches | **13.2%** - still not enough, needs 5.0+ |
+
+The part still came out `rescued` because nothing gated on the rate. Fixed:
+default is now 2.0 and anything under `min_face_rate` (90%) ends as
+`casting_partial` instead of being silently shipped.
+
+**2. `MiddleGeometry` does not connect the patches; `MidSurfAuto` does.**
+Same crash box: geometry+mesh gives 9 components, full Casting gives 3, at 4x the
+element count and 206 s vs 12 s. So the connection step lives inside MidSurfAuto,
+which is also the third mesher we do not want and can hang for 10+ minutes on a
+sill insert.
+
+Stitching APIs were tried and do not fit: `FacesFuseProximities` requires two
+*different* face lists, `JoinFaces` takes one argument and rejects mid-surface
+faces, `mesh.AutoPaste` returned 0 and changed nothing.
+
+Practical split: use Casting at tol 2.0 and accept the remaining patches as
+separate walls joined by welds/RBE3 (normal BIW practice), or run `MidSurfAuto`
+on those specific parts as an explicit exception.
+
+## Other mid-surface entry points in ANSA
+
+Beyond `Skin` and Casting, the API also exposes `base.SkinSingleTRB`,
+`base.MidSurfExtrusion` (extruded profiles), `base.FacesMiddleSingle` and
+`base.CurvesMiddle` (single face / single curve). QA helpers:
+`mesh.CheckMiddleSurface`, `mesh.CheckMiddleMesh`, `mesh.GetMiddleMeshQualityScore`.
+
 ## Why long batches must not go through the MCP server
 
 Measured on a 540-part BIW folder, four disconnects in one afternoon. The chain:
