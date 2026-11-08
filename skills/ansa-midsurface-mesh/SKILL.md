@@ -273,7 +273,7 @@ count.
 | status | meaning | what the user must be told |
 |---|---|---|
 | `done` | shell mesh written | element count, gauge, edge p50 |
-| `hardware` | standard part - total surface area below `hardware_area` (default 4 000 mm2) | **nothing to do**. A bolt, nut or clip has no offsettable surface pair; Skin cannot work on it at any setting. Report the count (`n_hardware`) separately - it is **not** an issue |
+| `hardware` | standard part - the part-number block (`standard_code_pattern`, default `S\d{6}$`) or the CATIA Nomenclature says so, otherwise surface area below `hardware_area` (default 4 000 mm2) | **nothing to do**. A bolt, nut or clip has no offsettable surface pair; Skin cannot work on it at any setting. Report the count (`n_hardware`) separately - it is **not** an issue |
 | `not_sheet_metal` | dominant wall below the area threshold, or thicker than `max_sheet_thickness` | the measured wall and why it was rejected |
 | `skin_failed` | Skin returned no faces even after `checkfix` and `rebuild` | the part needs manual middlesurfacing (or `MidSurfAuto` as a fallback) |
 | `geometry_only` | mesh requested but nothing was produced | same as above |
@@ -284,14 +284,27 @@ Three classification traps found on a real folder:
 
 - **A bolt is not a failed panel.** Standard parts answer the thickness estimate
   exactly like a panel, so Skin is attempted, fails, and dumps them into
-  `skin_failed` where they bury the panels that really need a human. On the
-  553-part body every standard part measured 360-3 412 mm2 while the smallest real
-  panel was 4 739 mm2, which is where `hardware_area` (4 000 mm2) comes from. The
-  check runs in **two** places: when the classifier rejects a part, and after Skin
-  returns nothing - so `是否钣金` in `汇总.csv` keeps the classifier's raw verdict and
-  may read 是 for a `hardware` row. The status wins; the column only says what the
-  wall estimate thought. Treat anything between 3 000 and 5 000 mm2 as borderline
-  and look at the part before trusting the label.
+  `skin_failed` where they bury the panels that really need a human. Two signals
+  separate them, in this order:
+
+  1. **Name and part number** - a CATPart carries its Chinese Nomenclature in the
+     binary as `_Nomenclature` + one length byte + UTF-8 (`read_nomenclature`
+     decodes it; ANSA only exposes the file stem). On 553 real parts the `S` block
+     of the part-number range held 118 parts and every one was a standard part;
+     the names agree (`六角法兰焊接螺母`, `焊接螺柱`, `车身堵塞`). This runs before
+     classification, so a bolt costs no DetectSolidDescription and no Skin. It is
+     also the only signal that catches large standard parts: a threaded bushing
+     measures 11 636 mm2 and reads as a panel by area alone.
+  2. **Surface area** - the fallback for unnamed parts. On the same body every
+     standard part measured 360-3 412 mm2 while the smallest real panel was
+     4 739 mm2, which is where `hardware_area` (4 000 mm2) comes from.
+
+  The name is **not** a verdict for structure: 托架 and 板 appear 174 and 196 times
+  and cover both 1 mm stampings and thick castings, so sheet metal stays a geometry
+  decision. `是否钣金` in `汇总.csv` keeps the classifier's raw verdict and may read
+  是 for a `hardware` row - the status wins. Anything between 3 000 and 5 000 mm2
+  whose name is not a standard part gets "临界：名称非标准件，建议复核" appended to
+  `原因` instead of being quietly filed.
 
 - **A thick part can look 100% thin.** `R007_A0072600643_WELD.CATPart` reported a
   single thickness covering 100% of its faces - 7.453 mm. Area fraction alone

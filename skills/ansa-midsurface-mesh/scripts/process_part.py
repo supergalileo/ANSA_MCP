@@ -9,6 +9,8 @@
         "max_thickness": 6.0,
         "max_sheet_thickness": 4.0,      # a wall thicker than this is not sheet
         "hardware_area": 4000.0,         # below this, a shellable-looking part is a bolt
+        "name_rules": True,              # read the CATIA Nomenclature before measuring
+        "standard_code_pattern": r"S\\d{6}$",   # part-number block that means "standard part"
         "save":     r"D:/out/A0072600089.ansa",
     }
     exec(open(r"<skill>/scripts/process_part.py", encoding="utf-8").read(), globals())
@@ -35,12 +37,25 @@ Hardware
 --------
 A BIW folder is full of bolts, nuts and clips. They answer the thickness estimate
 like a panel but have no pair of offsettable surfaces, so Skin cannot work on them
-at any parameter setting. Size is what separates them: on a 553-part body every
-standard part measured 360-3 412 mm2 while the smallest real panel was 4 739 mm2,
-hence `hardware_area` (default 4 000 mm2). It is applied twice - when the
-classifier rejects a part (labels the rejection) and after Skin returns nothing
-(labels the failure) - so `part_area` reaches the log either way. Anything
-between 3 000 and 5 000 mm2 is worth an eyeball before the label is trusted.
+at any parameter setting. Two signals identify them, in this order:
+
+1. **Name and part number.** The CATPart carries a Chinese Nomenclature (see
+   `read_nomenclature`), and the part-number block does the rest. On 553 parts
+   the S-code block held 118 parts and every one of them was a standard part;
+   the names agree (`六角法兰焊接螺母`, `焊接螺柱`, `车身堵塞`). This gate runs
+   before classification, so a bolt never pays for DetectSolidDescription or
+   three Skin attempts. It also catches what size cannot: a threaded bushing
+   measures 11 636 mm2 and reads as a panel by area alone.
+2. **Surface area**, as the fallback for everything unnamed. On the same body
+   every standard part measured 360-3 412 mm2 while the smallest real panel was
+   4 739 mm2, hence `hardware_area` (default 4 000 mm2). Applied twice - when the
+   classifier rejects a part, and after Skin returns nothing - so `part_area`
+   reaches the log either way.
+
+The name is not a verdict for structure: 托架 and 板 cover both 1 mm stampings
+and thick castings, which is why sheet metal is still decided by geometry. When
+the two signals disagree the row keeps its status and the note says
+"临界：名称非标准件，建议复核" instead of quietly picking a side.
 """
 
 import json
@@ -158,6 +173,99 @@ def solid_area(deck, part):
         return 0.0
 
 
+NOMEN_KEY = b"_Nomenclature"
+
+NAME_RULES = (
+    ("fastener", ("螺母", "螺栓", "螺柱", "垫圈", "螺钉", "铆钉", "卡扣")),
+    ("bushing", ("衬套", "导套", "螺套")),
+    ("plug", ("堵塞", "堵盖")),
+    ("glass", ("玻璃",)),
+    ("nonmetal", ("塑料", "泡沫", "NVH", "绝缘", "贴条", "密封", "橡胶")),
+)
+STRUCT_HINTS = ("立柱", "托架", "板", "梁", "柱")
+STD_KINDS = ("fastener", "bushing", "plug")
+
+
+def read_nomenclature(path):
+    """The Chinese Nomenclature, read straight out of the CATPart binary.
+
+    A V5 CFV2 part stores it as the literal key `_Nomenclature`, one length
+    byte, then that many bytes of UTF-8 - the trailing CR is counted in, so it
+    has to be stripped. Worth reading the file rather than asking ANSA: the
+    imported part name is only the file stem, which carries no meaning.
+
+    553 parts checked, 553 exact matches against the delivery index.
+    """
+    try:
+        with open(path, "rb") as fh:
+            blob = fh.read()
+    except Exception:
+        return ""
+    i = blob.find(NOMEN_KEY)
+    if i < 0:
+        return ""
+    j = i + len(NOMEN_KEY)
+    if j >= len(blob):
+        return ""
+    raw = blob[j + 1:j + 1 + blob[j]]
+    return raw.decode("utf-8", "ignore").strip("\r\n\x00 ")
+
+
+def name_kind(name):
+    """Coarse class from the Nomenclature, '' when nothing matches.
+
+    This does not decide sheet metal: 托架 and 板 appear 174 and 196 times and
+    cover both 1 mm stampings and thick castings. It is reliable only for the
+    part families that have a name of their own.
+    """
+    n = name or ""
+    for kind, words in NAME_RULES:
+        if not any(w in n for w in words):
+            continue
+        if kind == "glass" and any(w in n for w in STRUCT_HINTS):
+            continue                      # 后三角窗玻璃立柱 is a pillar
+        return kind
+    return ""
+
+
+def standard_part(code, name, params):
+    """(kind, why) when this part is a standard part, else (None, None).
+
+    Standard parts are named, not measured. `A007S030430` sorts into the S
+    block of the part-number range, and the name says 六角法兰焊接螺母. On 553
+    real parts both signals agreed with the area rule on every one of the 118
+    S-code parts, and the name catches what area alone misses: a 11 636 mm2
+    threaded bushing reads as a panel by size.
+    """
+    if not params.get("name_rules", True):
+        return None, None
+    pat = str(params.get("standard_code_pattern", r"S\d{6}$"))
+    if code and re.search(pat, code):
+        return "code", "件号 %s 属标准件号段" % code
+    kind = name_kind(name)
+    if kind in STD_KINDS:
+        return kind, "中文名称「%s」" % name
+    return None, None
+
+
+def borderline(area, hw_area, name, cl=None):
+    """True when an area-based `hardware` label deserves a second look.
+
+    Two shapes of doubt. The area sits within a quarter of the threshold, or the
+    wall estimate found a thin wall over a good part of the faces: a 1 924 mm2
+    stamping reads as a bolt by size, but 2.6 mm over 34% of its faces says panel.
+    The label still gets written - the note just has to say so.
+    """
+    if not area or not hw_area or name_kind(name) in STD_KINDS:
+        return False
+    if 0.75 * hw_area <= area <= 1.25 * hw_area:
+        return True
+    if not cl:
+        return False
+    t, frac = cl.get("estimated_T"), cl.get("fraction") or 0.0
+    return bool(t) and t <= float(cl.get("max_sheet_thickness") or 4.0) and frac >= 0.25
+
+
 def rename_prop(deck, pid, name):
     try:
         pr = base.GetEntity(deck, "PSHELL", int(pid))
@@ -248,6 +356,24 @@ def run(params):
     solid_part = solid_parts[0]
     solid_faces = base.CollectEntities(deck, solid_part, "FACE")
 
+    # ------------------------------------------- 0. name / part-number gate
+    # Cheaper and surer than measuring: a bolt does not need DetectSolidDescription
+    # or three Skin attempts to be recognised, it needs its name read.
+    log["part_name"] = read_nomenclature(cat)
+    log["name_kind"] = name_kind(log["part_name"])
+    std_kind, std_why = standard_part(code, log["part_name"], params)
+    if std_kind and not params.get("force"):
+        area = solid_area(deck, solid_part)
+        log["part_area"] = round(area, 1)
+        log["std_part"] = std_kind
+        log["status"] = "hardware"
+        log["note"] = ("标准件：%s，表面积 %.0f mm²，不抽中面" % (std_why, area)
+                       if area else "标准件：%s，不抽中面" % std_why)
+        if save:
+            base.SaveAs(save)
+            log["saved"] = save
+        return log
+
     # ---------------------------------------------------------- 1. classify
     log["classify"] = classify(deck, solid_faces,
                                float(params.get("sheet_metal_fraction", 0.5)),
@@ -264,8 +390,10 @@ def run(params):
         log["hardware_area"] = hw_area
         if area and area < hw_area:
             log["status"] = "hardware"
-            log["note"] = ("标准件/紧固件：表面积 %.0f mm²，非薄壁钣金，不适用抽中面"
-                           % area)
+            note = ("标准件/紧固件：表面积 %.0f mm²，非薄壁钣金，不适用抽中面" % area)
+            if borderline(area, hw_area, log.get("part_name"), log.get("classify")):
+                note += "（临界：名称非标准件，建议复核）"
+            log["note"] = note
         else:
             log["status"] = "not_sheet_metal"
             log["note"] = (log["classify"].get("reason")
@@ -410,7 +538,10 @@ def run(params):
         log["hardware_area"] = hw_area
         if area and area < hw_area:
             log["status"] = "hardware"
-            log["note"] = ("标准件/紧固件：表面积 %.0f mm²，非薄壁钣金，不适用抽中面" % area)
+            note = ("标准件/紧固件：表面积 %.0f mm²，非薄壁钣金，不适用抽中面" % area)
+            if borderline(area, hw_area, log.get("part_name"), log.get("classify")):
+                note += "（临界：名称非标准件，建议复核）"
+            log["note"] = note
         else:
             log["status"] = "skin_failed"
             log["note"] = ("Skin produced no middle-surface faces after repair steps: %s"

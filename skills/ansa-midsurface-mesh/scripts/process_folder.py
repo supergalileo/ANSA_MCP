@@ -11,6 +11,8 @@
         "sheet_metal_fraction": 0.5,
         "max_sheet_thickness": 4.0,
         "hardware_area": 4000.0,   # below this a rejected part is a bolt, not a panel
+        "name_rules": True,        # standard parts are identified by name/part number
+        "standard_code_pattern": r"S\\d{6}$",
         "limit":    25,        # parts this invocation, 0 = no cap (chunking)
         "resume":   True,      # skip parts already finished in _progress.jsonl
         "order":    "size",    # "size" (small first) | "name"
@@ -33,8 +35,9 @@ off as `crash` so a single poisonous file cannot stall the queue.
 Status values per part:
     done              shell mesh written
     geometry_only     Skin produced no faces after repair; geometry kept
-    hardware          standard part (bolt, nut, clip): area below `hardware_area`,
-                      no offsettable surface pair - not a failure, needs nobody
+    hardware          standard part: the part-number block or the Chinese
+                      Nomenclature says so, or (when unnamed) the surface area is
+                      below `hardware_area` - not a failure, needs nobody
     not_sheet_metal   dominant wall covers less than `sheet_metal_fraction`
     skin_failed       Skin refused and repair did not help
     crash             ANSA died on this part `max_attempts` times
@@ -164,6 +167,7 @@ def summarise(rows):
                         "reason": r.get("reason") or r.get("note") or r.get("error"),
                         "estimated_T": r.get("estimated_T"),
                         "part_area": r.get("part_area"),
+                        "part_name": r.get("part_name"),
                         "fraction": r.get("fraction")} for r in issues]}
 
 
@@ -180,11 +184,11 @@ def write_summary(out_dir, rows, folder, extra=None):
     csv_path = os.path.join(out_dir, "汇总.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["零件", "编号", "状态", "是否钣金", "薄壁面积占比", "表面积mm2",
+        w.writerow(["零件", "中文名称", "编号", "状态", "是否钣金", "薄壁面积占比", "表面积mm2",
                     "判定厚度mm", "是否修复", "中面面数", "其中check桶", "总面数",
                     "壳单元", "边长P50", "property", "ansa", "nas", "耗时s", "原因"])
         for r in rows:
-            w.writerow([r["part"], r["code"], r["status"],
+            w.writerow([r["part"], r.get("part_name") or "", r["code"], r["status"],
                         "是" if r["is_sheet_metal"] else "否",
                         r["fraction"], r.get("part_area"), r["estimated_T"],
                         "是" if r["repaired"] else "否",
@@ -255,14 +259,14 @@ def run(params):
                          ("part", "code", "status", "is_sheet_metal", "fraction",
                           "estimated_T", "repaired", "skin_faces", "skin_check",
                           "n_FACE", "n_SHELL", "edge_p50", "props", "ansa", "nas",
-                          "seconds", "reason", "part_area")})
+                          "seconds", "reason", "part_area", "part_name")})
             rows[-1]["part"] = name
             continue
         if not ends and st.get("begins", 0) >= attempts_max:
             rows.append({"part": name, "code": part_code(cat), "status": "crash",
                          "is_sheet_metal": None, "fraction": None,
                          "estimated_T": None, "repaired": None, "skin_faces": None,
-                         "part_area": None,
+                         "part_area": None, "part_name": None,
                          "n_FACE": None, "n_SHELL": None, "edge_p50": None,
                          "props": [], "ansa": None, "nas": None, "seconds": None,
                          "reason": "ANSA 在该零件上中断 %d 次，已跳过" % st["begins"]})
@@ -310,6 +314,8 @@ def run(params):
             "fraction": cls.get("fraction"),
             "estimated_T": cls.get("estimated_T"),
             "part_area": r.get("part_area"),
+            "part_name": r.get("part_name"),
+            "std_part": r.get("std_part"),
             "repaired": (r.get("skin") or {}).get("repaired"),
             "skin_faces": (r.get("skin") or {}).get("faces"),
             "skin_check": (r.get("skin") or {}).get("check"),
