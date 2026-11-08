@@ -7,6 +7,8 @@
         "qual":     r"D:/proj/5MM.ansa_qual",
         "repair":   "auto",              # "auto" | "always" | "never"
         "max_thickness": 6.0,
+        "max_sheet_thickness": 4.0,      # a wall thicker than this is not sheet
+        "hardware_area": 4000.0,         # below this, a shellable-looking part is a bolt
         "save":     r"D:/out/A0072600089.ansa",
     }
     exec(open(r"<skill>/scripts/process_part.py", encoding="utf-8").read(), globals())
@@ -28,6 +30,17 @@ element is `{thickness: area_fraction}`. A dominant entry above
 already gives the gauge, so the verdict and the thickness come from one call.
 `estimate_thickness` and `return_percentage` are mutually exclusive - passing both
 raises.
+
+Hardware
+--------
+A BIW folder is full of bolts, nuts and clips. They answer the thickness estimate
+like a panel but have no pair of offsettable surfaces, so Skin cannot work on them
+at any parameter setting. Size is what separates them: on a 553-part body every
+standard part measured 360-3 412 mm2 while the smallest real panel was 4 739 mm2,
+hence `hardware_area` (default 4 000 mm2). It is applied twice - when the
+classifier rejects a part (labels the rejection) and after Skin returns nothing
+(labels the failure) - so `part_area` reaches the log either way. Anything
+between 3 000 and 5 000 mm2 is worth an eyeball before the label is trusted.
 """
 
 import json
@@ -131,6 +144,20 @@ def pids_of(deck, faces):
     return out
 
 
+def solid_area(deck, part):
+    """Total surface area of the solid in mm2, 0.0 when ANSA will not say.
+
+    This is the one measurement that separates a standard part from a real
+    panel: a bolt answers the thickness estimate exactly like a bracket and only
+    its size gives it away. Read through one helper so the pre-screen and the
+    post-Skin fallback cannot disagree about what they measured.
+    """
+    try:
+        return float(base.GetEntityCardValues(deck, part, ["AREA"]).get("AREA") or 0.0)
+    except Exception:
+        return 0.0
+
+
 def rename_prop(deck, pid, name):
     try:
         pr = base.GetEntity(deck, "PSHELL", int(pid))
@@ -227,10 +254,22 @@ def run(params):
                                float(params.get("max_sheet_thickness", 4.0)))
     if not log["classify"].get("ok"):
         return {"ok": False, "error": "classification failed", "log": log}
+    hw_area = float(params.get("hardware_area", 4000.0))
     if not log["classify"]["is_sheet_metal"] and not params.get("force"):
-        log["status"] = "not_sheet_metal"
-        log["note"] = (log["classify"].get("reason")
-                       or "dominant wall fraction below threshold")
+        # A rejected part is either a real solid or a standard part. Both are
+        # legitimately not shellable, but they do not belong on the same list:
+        # the solid needs a human, the bolt needs nobody. Size decides.
+        area = solid_area(deck, solid_part)
+        log["part_area"] = round(area, 1)
+        log["hardware_area"] = hw_area
+        if area and area < hw_area:
+            log["status"] = "hardware"
+            log["note"] = ("标准件/紧固件：表面积 %.0f mm²，非薄壁钣金，不适用抽中面"
+                           % area)
+        else:
+            log["status"] = "not_sheet_metal"
+            log["note"] = (log["classify"].get("reason")
+                           or "dominant wall fraction below threshold")
         if save:
             base.SaveAs(save)
             log["saved"] = save
@@ -361,9 +400,21 @@ def run(params):
             drop_parts(new_parts)
 
     if n_skin == 0:
-        log["status"] = "skin_failed"
-        log["note"] = ("Skin produced no middle-surface faces after repair steps: %s"
-                       % (", ".join(log["repair_steps"]) or "none"))
+        # A BIW folder is full of bolts, nuts and clips. They look thin-walled to
+        # the thickness estimate but have no pair of offsettable surfaces, so Skin
+        # cannot work on them whatever the parameters. Their giveaway is size: on a
+        # 553-part body, every standard part measured 360-3 412 mm2 while the
+        # smallest real panel was 4 739 mm2.
+        area = solid_area(deck, solid_part)
+        log["part_area"] = round(area, 1)
+        log["hardware_area"] = hw_area
+        if area and area < hw_area:
+            log["status"] = "hardware"
+            log["note"] = ("标准件/紧固件：表面积 %.0f mm²，非薄壁钣金，不适用抽中面" % area)
+        else:
+            log["status"] = "skin_failed"
+            log["note"] = ("Skin produced no middle-surface faces after repair steps: %s"
+                           % (", ".join(log["repair_steps"]) or "none"))
         if save:
             base.SaveAs(save)
             log["saved"] = save

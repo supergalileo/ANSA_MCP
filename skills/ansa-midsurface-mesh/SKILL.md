@@ -273,12 +273,25 @@ count.
 | status | meaning | what the user must be told |
 |---|---|---|
 | `done` | shell mesh written | element count, gauge, edge p50 |
+| `hardware` | standard part - total surface area below `hardware_area` (default 4 000 mm2) | **nothing to do**. A bolt, nut or clip has no offsettable surface pair; Skin cannot work on it at any setting. Report the count (`n_hardware`) separately - it is **not** an issue |
 | `not_sheet_metal` | dominant wall below the area threshold, or thicker than `max_sheet_thickness` | the measured wall and why it was rejected |
 | `skin_failed` | Skin returned no faces even after `checkfix` and `rebuild` | the part needs manual middlesurfacing (or `MidSurfAuto` as a fallback) |
 | `geometry_only` | mesh requested but nothing was produced | same as above |
+| `crash` | ANSA died on the part `max_attempts` times | the file must be opened by hand; it was skipped, not processed |
 | `error` | exception | the exception text |
 
-Two classification traps found on a real folder:
+Three classification traps found on a real folder:
+
+- **A bolt is not a failed panel.** Standard parts answer the thickness estimate
+  exactly like a panel, so Skin is attempted, fails, and dumps them into
+  `skin_failed` where they bury the panels that really need a human. On the
+  553-part body every standard part measured 360-3 412 mm2 while the smallest real
+  panel was 4 739 mm2, which is where `hardware_area` (4 000 mm2) comes from. The
+  check runs in **two** places: when the classifier rejects a part, and after Skin
+  returns nothing - so `是否钣金` in `汇总.csv` keeps the classifier's raw verdict and
+  may read 是 for a `hardware` row. The status wins; the column only says what the
+  wall estimate thought. Treat anything between 3 000 and 5 000 mm2 as borderline
+  and look at the part before trusting the label.
 
 - **A thick part can look 100% thin.** `R007_A0072600643_WELD.CATPart` reported a
   single thickness covering 100% of its faces - 7.453 mm. Area fraction alone

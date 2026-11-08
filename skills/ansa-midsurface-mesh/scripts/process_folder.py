@@ -9,6 +9,8 @@
         "nas":      True,
         "repair":   "auto",
         "sheet_metal_fraction": 0.5,
+        "max_sheet_thickness": 4.0,
+        "hardware_area": 4000.0,   # below this a rejected part is a bolt, not a panel
         "limit":    25,        # parts this invocation, 0 = no cap (chunking)
         "resume":   True,      # skip parts already finished in _progress.jsonl
         "order":    "size",    # "size" (small first) | "name"
@@ -31,10 +33,15 @@ off as `crash` so a single poisonous file cannot stall the queue.
 Status values per part:
     done              shell mesh written
     geometry_only     Skin produced no faces after repair; geometry kept
+    hardware          standard part (bolt, nut, clip): area below `hardware_area`,
+                      no offsettable surface pair - not a failure, needs nobody
     not_sheet_metal   dominant wall covers less than `sheet_metal_fraction`
     skin_failed       Skin refused and repair did not help
     crash             ANSA died on this part `max_attempts` times
     error             exception while processing
+
+`hardware` is deliberately absent from `issues`: a run that lists 121 bolts next
+to 12 real failures buries the 12. The count is reported as `n_hardware` instead.
 """
 
 import csv
@@ -65,7 +72,8 @@ def _scripts_dir(override=None):
             return c
     raise FileNotFoundError("process_part.py not found; looked in %r" % (cands,))
 
-PUBLISHED = {"done", "geometry_only", "not_sheet_metal", "skin_failed", "error", "crash"}
+PUBLISHED = {"done", "geometry_only", "not_sheet_metal", "skin_failed",
+             "error", "crash", "hardware"}
 CODE_RE = re.compile(r"([A-Za-z]\d{7,10})")
 BINDEX_RE = re.compile(r"^([A-Za-z]\d+)_")     # B0029_ / O004_ / R007_
 
@@ -140,23 +148,29 @@ def read_progress(path):
     return state
 
 
+NOT_ISSUE = ("done", "hardware")
+
+
 def summarise(rows):
     by_status = {}
     for r in rows:
         by_status[r["status"]] = by_status.get(r["status"], 0) + 1
-    issues = [r for r in rows if r["status"] != "done"]
+    issues = [r for r in rows if r["status"] not in NOT_ISSUE]
     return {"n_total": len(rows), "by_status": by_status,
-            "n_ok": by_status.get("done", 0), "n_issues": len(issues),
+            "n_ok": by_status.get("done", 0),
+            "n_hardware": by_status.get("hardware", 0),
+            "n_issues": len(issues),
             "issues": [{"part": r["part"], "code": r["code"], "status": r["status"],
                         "reason": r.get("reason") or r.get("note") or r.get("error"),
                         "estimated_T": r.get("estimated_T"),
+                        "part_area": r.get("part_area"),
                         "fraction": r.get("fraction")} for r in issues]}
 
 
 def write_summary(out_dir, rows, folder, extra=None):
     """Rewrite 汇总.csv / 汇总.json from every row known so far."""
-    order = {"done": 0, "geometry_only": 1, "skin_failed": 2,
-             "not_sheet_metal": 3, "crash": 4, "error": 5}
+    order = {"done": 0, "hardware": 1, "geometry_only": 2, "skin_failed": 3,
+             "not_sheet_metal": 4, "crash": 5, "error": 6}
     rows = sorted(rows, key=lambda r: (order.get(r["status"], 9), r["part"]))
     summary = summarise(rows)
     result = {"ok": summary["n_ok"] == summary["n_total"], "rows": rows,
@@ -166,13 +180,13 @@ def write_summary(out_dir, rows, folder, extra=None):
     csv_path = os.path.join(out_dir, "汇总.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["零件", "编号", "状态", "是否钣金", "薄壁面积占比",
+        w.writerow(["零件", "编号", "状态", "是否钣金", "薄壁面积占比", "表面积mm2",
                     "判定厚度mm", "是否修复", "中面面数", "其中check桶", "总面数",
                     "壳单元", "边长P50", "property", "ansa", "nas", "耗时s", "原因"])
         for r in rows:
             w.writerow([r["part"], r["code"], r["status"],
                         "是" if r["is_sheet_metal"] else "否",
-                        r["fraction"], r["estimated_T"],
+                        r["fraction"], r.get("part_area"), r["estimated_T"],
                         "是" if r["repaired"] else "否",
                         r["skin_faces"], r.get("skin_check"), r["n_FACE"], r["n_SHELL"],
                         r["edge_p50"],
@@ -220,6 +234,7 @@ def run(params):
     stems = unique_stems(all_files, part_code)
     progress_path = (params.get("progress") or
                      (os.path.join(out_dir, "_progress.jsonl") if out_dir else None))
+    hw_area = float(params.get("hardware_area", 4000.0))
 
     # ------------------------------------------------------------- resume state
     state = read_progress(progress_path) if (progress_path and params.get("resume", True)) else {}
@@ -235,18 +250,19 @@ def run(params):
                 ok_end = e
         if ok_end and not (params.get("redo_failed")
                            and ok_end.get("status") in ("skin_failed", "geometry_only",
-                                                        "error", "crash")):
+                                                        "error", "crash", "hardware")):
             rows.append({k: ok_end.get(k) for k in
                          ("part", "code", "status", "is_sheet_metal", "fraction",
                           "estimated_T", "repaired", "skin_faces", "skin_check",
                           "n_FACE", "n_SHELL", "edge_p50", "props", "ansa", "nas",
-                          "seconds", "reason")})
+                          "seconds", "reason", "part_area")})
             rows[-1]["part"] = name
             continue
         if not ends and st.get("begins", 0) >= attempts_max:
             rows.append({"part": name, "code": part_code(cat), "status": "crash",
                          "is_sheet_metal": None, "fraction": None,
                          "estimated_T": None, "repaired": None, "skin_faces": None,
+                         "part_area": None,
                          "n_FACE": None, "n_SHELL": None, "edge_p50": None,
                          "props": [], "ansa": None, "nas": None, "seconds": None,
                          "reason": "ANSA 在该零件上中断 %d 次，已跳过" % st["begins"]})
@@ -272,6 +288,7 @@ def run(params):
              "max_thickness": params.get("max_thickness", 6.0),
              "sheet_metal_fraction": params.get("sheet_metal_fraction", 0.5),
              "max_sheet_thickness": params.get("max_sheet_thickness", 4.0),
+             "hardware_area": hw_area,
              "change_option": params.get("change_option", "macro perimeters")}
         if out_dir:
             p["save"] = os.path.join(out_dir, stem + ".ansa")
@@ -292,6 +309,7 @@ def run(params):
                               and bool(cls.get("is_sheet_metal")),
             "fraction": cls.get("fraction"),
             "estimated_T": cls.get("estimated_T"),
+            "part_area": r.get("part_area"),
             "repaired": (r.get("skin") or {}).get("repaired"),
             "skin_faces": (r.get("skin") or {}).get("faces"),
             "skin_check": (r.get("skin") or {}).get("check"),
@@ -315,7 +333,7 @@ def run(params):
             try:
                 write_summary(out_dir, rows, folder,
                               {"n_todo": len(todo), "n_left": len(todo) - i,
-                               "running": True})
+                               "hardware_area": hw_area, "running": True})
             except Exception as exc:
                 print("SUMMARY_WRITE_SKIPPED %s" % str(exc)[:120])
         print("FOLDER %d/%d %.1fs %-42s %-16s shells=%s T=%s" % (
@@ -327,11 +345,13 @@ def run(params):
     if out_dir and params.get("write_summary", True):
         result = write_summary(out_dir, rows, folder,
                                {"n_todo": len(todo), "n_left": len(todo) - len(batch),
-                                "running": False})
+                                "hardware_area": hw_area, "running": False})
     else:
         result = {"ok": False, "rows": rows, "summary": summarise(rows),
                   "folder": folder}
-    result["ok"] = result["summary"]["n_ok"] == result["summary"]["n_total"]
+    # `ok` means nothing is left for a human: hardware is not an issue, so a
+    # folder of 121 bolts and 104 panels is a clean run, not a 225-part failure.
+    result["ok"] = result["summary"]["n_issues"] == 0
     result["n_done_this_run"] = len(batch)
     result["n_remaining"] = len(todo) - len(batch)
     return result
