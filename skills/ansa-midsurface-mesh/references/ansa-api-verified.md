@@ -75,6 +75,37 @@ new_props = [p for p in base.CollectEntities(deck, None, "__PROPERTIES__")
 mid_faces = base.CollectEntities(deck, new_props[0], "FACE")
 ```
 
+### `base.MiddleGeometry(faces, thickness_tolerance)` - Casting, faces only
+
+The geometry half of `MidSurfAuto`, and the one to use when the mesh has to come
+from `mesh.Mesh` or a Batch Mesh session. ANSA prints `Middle-Casting time : N s`
+while MidSurfAuto runs; this is the same routine without the meshing.
+
+```python
+ret = base.MiddleGeometry(faces, 1.0)      # both args positional, no keywords
+d   = ret[0] if isinstance(ret, list) else ret
+d["faces_success_rate"]        # 100.0
+d["perimeters_success_rate"]   # 99.79
+d["problematic_faces"]         # [] - inspect this, not only the rate
+d["result_faces"]              # the created middle-surface FACEs
+```
+
+Verified on ANSA 24.1.2 against seven parts a 553-part BIW folder had rejected via
+Skin: 100% face success on every one, 1-3 s each. The created entities are FACE
+only - `SHELL` stays 0 - so the result can be re-meshed by any engine. Meshing those
+faces with `mesh.Mesh` at the project's 5 mm mpar produced 96-21 298 shells, and
+`GetShellThickness` immediately returned the true gauge (1.02 / 1.37 / 1.52 / 2.91 /
+3.42 mm on the five sizes), so no thickness pass is needed afterwards. The PSHELL
+`T` is still the 1.0 default and must be written by hand.
+
+Signature discovery, for reuse: `MiddleGeometry()` -> `missing 'input'`;
+`MiddleGeometry(faces)` -> `missing 'thickness_tolerance'`. `faces=` as a keyword is
+rejected even though `input` exists, so pass both positionally.
+
+Also present but undocumented and untested: `base.FacesMiddleSingle`,
+`base.CurvesMiddle`, `base.MidSurfExtrusion`, `base.IsPartForSkin`,
+`base.CalculateSimilarityOfCastingParts`.
+
 ### `base.MidSurfAuto(faces=..., thick=..., length=..., ...)`
 
 The only routine found that obeys a target element length. Documented parameters

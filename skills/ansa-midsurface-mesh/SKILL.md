@@ -27,23 +27,49 @@ or for defining connections and welds. Those are separate tasks.
 
 **A part that `base.Skin` refuses is not automatically a solid.** Skin failing and
 a part being thick-walled look identical from the return value, and on a real BIW
-assembly Skin rejected 13 of 68 parts while `MidSurfAuto` went on to build a clean
-uniform mesh on 10 of them. Treat a Skin failure as *unknown* and retry with
-MidSurfAuto; only call a part non-shellable when both fail.
+assembly Skin rejected 13 of 68 parts while Casting went on to build a middle
+surface on all of them. Treat a Skin failure as *unknown*, not as a verdict.
 
-`scripts/rescue_midsurf.py` is that second pass. It walks a folder, runs
-`MidSurfAuto` per part, reads the gauge back with `GetShellThickness` (the
-property is left at the 1.0 default - see the API notes), writes the median, and
-saves `.ansa` + `.nas`:
+The second pass is `scripts/casting_midsurf.py`. It calls
+`base.MiddleGeometry(faces, thickness_tolerance)` - the Casting algorithm with the
+meshing stripped out - and then hands the resulting faces to **the same two engines
+used everywhere else** (`mesh.Mesh`, or a Batch Mesh session with `engine="batchmesh"`),
+both driven by the project's own `.ansa_mpar` / `.ansa_qual`:
 
-    PARAMS = {"folder": ..., "out_dir": ..., "length": 5.0, "limit": 0}
-    exec(open(r"<skill>/scripts/rescue_midsurf.py", encoding="utf-8").read(), globals())
+    PARAMS = {"folder": ..., "out_dir": ..., "engine": "mesh",
+              "mpar": ..., "qual": ..., "limit": 0}
+    exec(open(r"<skill>/scripts/casting_midsurf.py", encoding="utf-8").read(), globals())
 
-Run it in small chunks. `MidSurfAuto` meshing a large part can kill the ANSA
-process outright - measured twice on a 553-part BIW folder, once at 21 861 shells
-(5 min, survived) and once on a 350-face bracket. Every finished part is appended
-to `_rescue_progress.jsonl` before the next one starts, so a crash costs one part
-and the next run resumes.
+**Why not `MidSurfAuto` for this.** It is a mesher, not a surface extractor: on a
+bracket it produced a part named `Middle Skin Shells` holding 1306 SHELL and **0
+FACE**. There is no middle-surface geometry to re-mesh, inspect, or pass to another
+engine, and its own mesher is a third algorithm that no project setting controls.
+ANSA logs `Middle-Casting time` while MidSurfAuto runs - that is the same Casting
+routine, and `MiddleGeometry` is its geometry-only face.
+
+Measured on the seven parts Skin had rejected from a 553-part BIW folder
+(`engine="mesh"`, 5 mm from the handed mpar):
+
+| | faces in | mid faces | face rate | shells | gauge | time |
+|---|---|---|---|---|---|---|
+| B0360 托架 | 322 | 125 | 100% | 1486 | 1.52 | 7.1 s |
+| B0367 横梁 | - | 20 | 100% | 21 298 | 1.52 | 20.0 s |
+| B0504 | - | 34 | 100% | 765 | 2.91 | 4.9 s |
+| B0571 端部托架 | - | 33 | 100% | 779 | 2.91 | 4.7 s |
+| B0870 加强托架 | 354 | 141 | 100% | 3002 | 1.02 | 7.7 s |
+| B1028 托架 | 102 | 10 | 100% | 96 | 3.42 | 2.9 s |
+| O081 后安装托架 | 145 | 21 | 100% | 1256 | 1.37 | 2.8 s |
+
+Seven parts in 50 s total. `MidSurfAuto` on four of the same parts took 370 s and
+then killed the ANSA process; with Casting the same folder finishes before a crash
+has a chance to happen, and `_casting_progress.jsonl` still resumes if one does.
+
+Casting measures the wall while it builds the faces and the mesher carries it onto
+the elements, so `GetShellThickness` is valid right after meshing - no
+`mesh.CalculateThickness` call is needed (it wants a third positional
+`maximum_thickness` argument anyway). The PSHELL keeps its 1.0 default, so the
+median must be written by hand; anything whose p2-p98 spread exceeds 15% of the
+median is written as `<code>_T<gauge>_suspect` and flagged `rescued_var`.
 
 **Repair the geometry before giving up on Skin.** Verified on ANSA 24.1.2: two
 CATParts at 417 and 442 faces returned 0 for every `max_thickness` up to 40 mm,
@@ -595,6 +621,12 @@ reliable selector is the newly created `@SKIN` property: collect its faces.
   switched by `PARAMS["engine"]`.
 - `scripts/inspect_model.py` - read-only model survey: entity counts, per-part
   bounding box and area, property thickness, deck verdict.
+- `scripts/casting_midsurf.py` - **the second pass**: `MiddleGeometry` (Casting,
+  faces only) then `mesh.Mesh` / Batch Mesh with the handed mpar+qual. Use this for
+  every part `Skin` refuses.
+- `scripts/rescue_midsurf.py` - same second pass built on `MidSurfAuto`. Kept
+  because it works, but it emits a mesh-only part with no faces and its own
+  mesher, so prefer `casting_midsurf.py` unless a free mesh is explicitly accepted.
 - `scripts/midsurface_mesh.py` - legacy two-pass build (`MidSurfAuto` + measured
   thickness) for runs that have no `.ansa_mpar` / `.ansa_qual`.
 - `references/ansa-api-verified.md` - exact signatures, what was verified on which
