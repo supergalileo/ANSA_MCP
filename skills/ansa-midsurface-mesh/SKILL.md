@@ -88,9 +88,20 @@ RESULT
 from `_progress.jsonl`, and returns `RESULT["summary"]` with `by_status` and
 `issues`. Same params plus `folder` / `out_dir`.
 
-Run 3 workers on disjoint file lists for a big folder: one process needed ~80 min
-for the last 130 parts, three brought it under 35 (≈0.4 GB each; 16 cores / 64 GB
+Run 3-4 workers on disjoint file lists for a big folder: one process needed ~80 min
+for the last 130 parts, three brought it under 35 (≈0.4-0.9 GB each; 16 cores / 64 GB
 is comfortable).
+
+For anything over a few hundred parts, drive it with `scripts/parallel_batch.py`
+instead of repeated `process_folder` calls - it runs outside the MCP server, so a
+crash costs one part instead of a reconnect (`references/field-notes.md` explains
+why the connector cannot survive this):
+
+    python scripts/parallel_batch.py --src <parts> --out <out> \
+        --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --workers 4
+
+It writes `_progress.jsonl`; finish with one `process_folder` call at `limit=0` to
+produce the summary.
 
 ### 0. Classify before touching anything
 
@@ -295,6 +306,9 @@ Say that parts are meshed independently and therefore share no nodes.
 - `scripts/mesh_engine.py` - meshing only (`mesh.Mesh` or Batch Mesh).
 - `scripts/casting_midsurf.py` - **second pass**: `MiddleGeometry` (faces only) then
   the chosen engine. Use for every part Skin refuses.
+- `scripts/parallel_batch.py` - N ANSA batch processes over one folder, outside the
+  MCP path: hardlinked slices, per-worker progress, stall watchdog, auto-restart.
+  The only sane way to run hundreds of parts.
 - `scripts/rescue_midsurf.py` - same second pass on `MidSurfAuto`; mesh-only output,
   keep only if a free mesh is acceptable.
 - `scripts/inspect_model.py` - read-only survey: entity counts, per-part bbox and

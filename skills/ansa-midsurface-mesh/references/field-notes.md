@@ -3,6 +3,63 @@
 Companion to `SKILL.md`. Everything here was measured; the rules derived from it
 live in `SKILL.md`, the raw numbers and the story of how each was found live here.
 
+## Why long batches must not go through the MCP server
+
+Measured on a 540-part BIW folder, four disconnects in one afternoon. The chain:
+
+1. ANSA's kernel dies outright on some geometry - the log ends with
+   `running... finished.` and no Python traceback at all, so the script never sees
+   an exception.
+2. The `ansa` MCP server is the **parent** of that ANSA process. When ANSA goes,
+   the server goes with it: the state file's `pid` and `ansa_pid` both point at
+   processes that no longer exist.
+3. The host does not respawn a stdio server by itself, so every crash costs a
+   manual reconnect.
+
+Nothing inside the server can fix (3). `scripts/parallel_batch.py` sidesteps the
+whole chain by launching `ansa64.bat -nogui -exec` directly: no connector in the
+path, no 600 s tool limit, and a crash costs one part.
+
+### Three traps in that driver, all hit for real
+
+- **A dead ANSA leaves the cmd.exe wrapper alive.** Watching the process for exit
+  reports "still running" forever: four workers sat idle for 11 minutes while
+  everything looked healthy. The only reliable signal is the progress file going
+  stale - 200 s without a new line means the worker is dead or hung, kill the
+  process tree and restart.
+- **`shutil.rmtree` on a slice folder trips the bulk-delete guard.** Clearing 57
+  stale hardlinks before a restart exceeded the guard's threshold and killed the
+  driver itself. Every run and every restart now gets a fresh directory and
+  nothing is ever deleted.
+- **The merged progress file must be appended to, never rewritten.** `_progress.jsonl`
+  also holds every record from an earlier MCP-driven phase; rewriting it with just
+  the current run's worker records dropped 490 rows and cost the summary. It was
+  rebuilt from `汇总.csv` plus the worker files.
+
+Also: `json.dumps` on a params dict emits `false`, which is not Python - generating
+a runner script with it produces an instant `NameError`. Use `pprint.pformat`.
+
+### Parallelism that actually helps
+
+16 logical cores, 4 workers, ~0.9 GB RSS each: 2.2 parts/min on a folder whose
+tail parts take 30-60 s each. More interesting than the speed:
+
+**four workers ran 25 parts with zero crashes, while the single-process runs died
+every 30-40 minutes.** Each worker exits after ~8 parts, so far less accumulated
+kernel state. Shorter process lifetimes are more stable than one long one.
+
+### Parts that kill a batch
+
+Two classes showed up on 540 parts, both non-structural trim:
+
+| part | behaviour | handling |
+|---|---|---|
+| `B0595_A0072600531` | crashes ANSA when processed **after other parts**, fine alone (99 509 shells, T=1.062) | run in its own process |
+| `O067`/`O090` 泡沫塑料盖, `O139`/`O144`/`O145` NVH 贴条 | Casting or meshing hangs indefinitely, no crash | mass-equivalent these; they are G11 non-structural anyway |
+
+The first one is the useful lesson: "this part crashes ANSA" can mean "this part
+crashes ANSA **in this context**". Retry it alone before writing it off.
+
 ## Casting second pass - the numbers
 
 Seven parts a 553-part BIW folder had rejected via `Skin`, run through
