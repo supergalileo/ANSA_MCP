@@ -78,10 +78,10 @@ number came from (`references/field-notes.md`).
 Skin, name properties, mesh, save - and returns one `RESULT`:
 
 ```python
-PARAMS = {"catpart": r"D:/proj/B0029_A0072600089.CATPart", "engine": "mesh",
+PARAMS = {"catpart": r"D:/proj/B####_A##########.CATPart", "engine": "mesh",
           "mpar": r"D:/proj/5MM.ansa_mpar", "qual": r"D:/proj/5MM.ansa_qual",
           "max_thickness": 6.0, "hardware_area": 4000.0,
-          "save": r"D:/out/A0072600089.ansa", "nas": r"D:/out/A0072600089.nas"}
+          "save": r"D:/out/A##########.ansa", "nas": r"D:/out/A##########.nas"}
 exec(open(r"<skill>/scripts/process_part.py", encoding="utf-8").read(), globals())
 RESULT
 ```
@@ -163,9 +163,9 @@ a `DetectSolidDescription` call or three Skin attempts.
 ### 0c. Property naming
 
 ```
-B0029_A0072600089.CATPart   -> code A0072600089
-  original solid PSHELL     -> A0072600089_origin
-  middle-surface PSHELL     -> A0072600089_T171      (1.709 mm)
+B####_A##########.CATPart   -> code A##########
+  original solid PSHELL     -> A##########_origin
+  middle-surface PSHELL     -> A##########_T171      (1.709 mm)
 ```
 
 Gauge suffix = measured wall in 0.01 mm, **rounded half up**: `floor(T*100 + 0.5)`,
@@ -202,9 +202,9 @@ Four defects a 289-part run exposed (details in `references/field-notes.md`):
 - Output names must not depend on processing order: compute the stem map once from
   the **name-sorted** full list and hand the same map to every worker.
 
-The file name is not the number: `R007_A0072600643_WELD` -> `A0072600643`, i.e. the
+The file name is not the number: `R###_A##########_WELD` -> `A##########`, i.e. the
 second underscore token. A digit regex like `[A-Za-z]\d{7,10}` also throws away the
-whole `A007S030430` family. Duplicates get a `__<letter+digits>` suffix, and that
+whole `A007S######` family. Duplicates get a `__<letter+digits>` suffix, and that
 suffix regex must accept any letter prefix, not just `B`.
 
 ### 0e. Second pass for the parts Skin refuses

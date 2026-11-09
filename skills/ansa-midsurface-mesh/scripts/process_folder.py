@@ -114,7 +114,7 @@ def collect(folder, pattern=".catpart", recursive=True):
 def unique_stems(files, part_code):
     """Distinct output stem per input file.
 
-    The rule is `B0029_A0072600089.CATPart -> A0072600089`, but the folder holds
+    The rule is `B####_A##########.CATPart -> A##########`, but the folder holds
     several files that share one part number (the same stamping used at four
     assembly positions). Keep the plain code for the first one and suffix the
     rest with their B-index, otherwise they overwrite each other's `.ansa`.

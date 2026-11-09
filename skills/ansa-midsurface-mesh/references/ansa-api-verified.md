@@ -478,14 +478,14 @@ ret = base.Skin(apply_thickness=True, new_pid=True, offset_type=2, ok_to_offset=
 - `failed` entries hold the source faces and no skin.
 - Every call creates one new ANSAPART per group **regardless of the bucket**, so
   a retry leaves the previous attempt's parts behind unless they are deleted.
-  Verified on `B0318_A0072600305`: three attempts left three parts of 58 faces
+  Verified on `B####_A##########`: three attempts left three parts of 58 faces
   each.
 
 ### `DetectSolidDescription(estimate_thickness=True)` sentinel
 
 Returns `[{thickness: area_fraction}]`. On an open body / mixed wall it answers
 `{-1.0: 0.0}` or `{-1.0: 1.0}`. `-1` means *estimation failed*; it must not be
-compared against a thickness limit. Seen on `B0747_A0072600594` (15.8 MB), which
+compared against a thickness limit. Seen on `B####_A##########` (15.8 MB), which
 then turned out to Skin successfully at 1.062 mm.
 
 ### Running several ANSA instances
@@ -532,7 +532,7 @@ for _ in range(3):
   signal is the FACE count (`O137`: 158 -> 157 on the first round) or a re-run of
   `execute()` that still returns reports.
 - Effect on 101 parts that Skin had already refused: 2 recovered
-  (`B0854_A0072600609` -> 5 338 elements, `B0672_A0072600902` -> 4 391), 99 still
+  (`B####_A##########` -> 5 338 elements, `B####_A##########` -> 4 391), 99 still
   failed. On a further 5 that look like sheet metal (uniform 1.0-1.8 mm, 85-98 %
   area) even 16 `Skin` parameter combinations plus this repair produced nothing,
   so those bodies are not closed thin-wall solids whatever the thickness estimate
