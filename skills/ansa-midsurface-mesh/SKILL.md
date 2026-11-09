@@ -227,11 +227,25 @@ meshes it and stitches it in a single call. On a rear crash absorber (203 faces,
 3.9 mm walls) it returned **one connected patch of 24 117 shells in 65 s**, where
 the old path returned **5 disconnected blocks**.
 
-The one parameter that decides whether it returns at all is `thick`. It is *not*
-free: `thick=1.0` on a 3.9 mm wall ran past 240 s with no result; `thick=3.5`
-returned in 65 s. The script takes it from
-`DetectSolidDescription(estimate_thickness=True)` - the dominant bin of that
-histogram is the answer (3.5 at 19% area share on the test part).
+The one parameter that is easy to misread is `thick` - the GUI's **Minimum
+Thickness**. It is a *search lower bound*, so it is a **speed knob, not a quality
+knob**. Swept on the test part (walls 2.5-5.4 mm):
+
+| thick | 1.0 | 2.0 | 3.0 | 3.5 | 4.0 | 4.5 |
+|---|---|---|---|---|---|---|
+| seconds | 133 | 91 | 74 | 68 | 65 | 59 |
+| shells | 23 923 | 24 178 | 23 859 | 24 281 | 24 516 | 24 195 |
+
+Time halves from 1.0 to 4.5; the element count moves ±3% (noise). A small `thick`
+is not wrong, just slow - it widens the range of face pairs the algorithm will
+try. Take it from `DetectSolidDescription(estimate_thickness=True)`; the dominant
+bin (3.5 at 19% area on the test part) is within a few tenths of the fastest
+useful value.
+
+`connect_weldings` did not change the block count on the test part (1 either way).
+Block count is *not* perfectly deterministic: `thick=3.5` gave 2 blocks on one run
+and 1 on another, at identical settings - re-run before treating a 2-block result
+as a defect.
 
 **`middle` - `MiddleGeometry` + your own engine**, opt in with `"casting": "middle"`.
 Faster (8 s) and every element comes from `mesh.Mesh` / Batch Mesh driven by the
@@ -264,9 +278,9 @@ strips), and in a single session the first hang eats the rest of the queue.
     python scripts/casting_batch.py --src <hard_parts> --out <out>/casting \
         --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --tol 2.0 --timeout 240
 
-Budget **70 s per part** for `autosurf` (vs 8 s for `middle`) and raise the
-per-part timeout above the 240 s used for the old path - a too-small `thick` is the
-one thing that makes MidSurfAuto run for minutes.
+Budget **70 s per part** for `autosurf` (vs 8 s for `middle`). The per-part timeout
+only needs to cover a slow `thick`, not a hang: even `thick=1.0` finished in 133 s
+on a 203-face part, so 300 s is generous.
 
 ### 0f. Verify before reporting
 
