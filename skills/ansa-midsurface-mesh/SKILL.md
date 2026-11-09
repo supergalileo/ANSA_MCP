@@ -32,6 +32,11 @@ Anything else - including `MidSurfAuto`'s built-in mesher - is a third algorithm
 that the project's `.ansa_mpar` / `.ansa_qual` do not control. Surfaces may come
 from `base.Skin` or from Casting; elements come from those two engines.
 
+**The one sanctioned exception is `autosurf` in 0e.** When Casting cannot produce a
+*continuous* surface (perimeter pairing below ~40%), the choice is between a
+parameter-exact mesh in 5 disconnected blocks and a stitched mesh from a third
+mesher. Take the stitched mesh, and say in the report which engine made it.
+
 **A part `base.Skin` refuses is not automatically a solid.** Skin failing and a part
 being thick-walled return the same `0`. Treat the failure as *unknown*, repair the
 geometry, and if it still refuses, run the Casting second pass (`casting_midsurf.py`,
@@ -209,27 +214,46 @@ suffix regex must accept any letter prefix, not just `B`.
 
 ### 0e. Second pass for the parts Skin refuses
 
-`scripts/casting_midsurf.py` calls `base.MiddleGeometry(faces,
-thickness_tolerance)` - the Casting algorithm with the meshing stripped out - and
-hands the resulting **faces** to the engine chosen above:
+`scripts/casting_midsurf.py` has two paths. **The default is `autosurf`**, and it
+changed on 2026-11-09 for a reason worth reading before switching back.
 
 ```python
-PARAMS = {"folder": ..., "out_dir": ..., "engine": "mesh",
-          "mpar": ..., "qual": ..., "limit": 0, "nas": False}
+PARAMS = {"folder": ..., "out_dir": ..., "nas": True}          # autosurf is the default
 exec(open(r"<skill>/scripts/casting_midsurf.py", encoding="utf-8").read(), globals())
 ```
 
-Seven parts Skin had rejected: 100% face success on every one, 50 s total, gauges
-1.02-3.42 mm (`references/field-notes.md` has the table). Casting measures the wall
-while it builds the faces and the mesher carries it onto the elements, so
-`GetShellThickness` is valid right after meshing - no `mesh.CalculateThickness`
-call (it also wants a third positional `maximum_thickness`). The PSHELL keeps its
-1.0 default: write the median by hand, and rename to `*_suspect` when the p2-p98
-spread exceeds 15% of the median.
+**`autosurf` - `base.MidSurfAuto`, one continuous patch.** It extracts the surface,
+meshes it and stitches it in a single call. On a rear crash absorber (203 faces,
+3.9 mm walls) it returned **one connected patch of 24 117 shells in 65 s**, where
+the old path returned **5 disconnected blocks**.
 
-`scripts/rescue_midsurf.py` does the same with `MidSurfAuto`. It works, but
-MidSurfAuto emits a mesh-only part (**1306 SHELL / 0 FACE**, verified) with its own
-mesher, so use it only when a free mesh is explicitly acceptable.
+The one parameter that decides whether it returns at all is `thick`. It is *not*
+free: `thick=1.0` on a 3.9 mm wall ran past 240 s with no result; `thick=3.5`
+returned in 65 s. The script takes it from
+`DetectSolidDescription(estimate_thickness=True)` - the dominant bin of that
+histogram is the answer (3.5 at 19% area share on the test part).
+
+**`middle` - `MiddleGeometry` + your own engine**, opt in with `"casting": "middle"`.
+Faster (8 s) and every element comes from `mesh.Mesh` / Batch Mesh driven by the
+handed `.ansa_mpar` / `.ansa_qual`. But the surface is **discrete**: on the same
+part `perimeters_success_rate` was 24.8%, so faces never really joined and the
+mesh broke into 5 blocks. Stitching afterwards made it worse - `RebuildTopology`
+gave 10 blocks, and rebuilding topology *before* Casting dropped the perimeter
+rate to 19.5%. `thickness_tolerance` 1.0/3.0/5.0/8.0 gave 20/33/37/22%, so no
+setting of it fixes this.
+
+So the trade is **connectivity against control**: MidSurfAuto emits `SHELL` only
+(no `FACE`), meshes with its own algorithm, and exposes only `length` - your
+`.ansa_mpar` / `.ansa_qual` do not drive it. A single-block mesh is worth more
+than a parameter-exact mesh that cannot be assembled, so `autosurf` is the default.
+Pick `middle` only when the mpar/qual must be provably honoured.
+
+Casting measures the wall while it builds, and `GetShellThickness` is valid right
+after meshing - no `mesh.CalculateThickness` call (it also wants a third positional
+`maximum_thickness`). Write the median into the PSHELL by hand, and rename to
+`*_suspect` when the p2-p98 spread exceeds 15% of the median. MidSurfAuto leaves
+the source solids in the deck: delete them before saving or the saved database
+shows grey geometry over the mesh and roughly doubles in size.
 
 **Run the second pass one part per process** when the set is a rescue list, not a
 handful of brackets: `scripts/casting_batch.py` launches one `ansa64.bat` per part
@@ -239,6 +263,10 @@ strips), and in a single session the first hang eats the rest of the queue.
 
     python scripts/casting_batch.py --src <hard_parts> --out <out>/casting \
         --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --tol 2.0 --timeout 240
+
+Budget **70 s per part** for `autosurf` (vs 8 s for `middle`) and raise the
+per-part timeout above the 240 s used for the old path - a too-small `thick` is the
+one thing that makes MidSurfAuto run for minutes.
 
 ### 0f. Verify before reporting
 
@@ -398,8 +426,11 @@ Say that parts are meshed independently and therefore share no nodes.
 - `scripts/deck_stats.py` - per-deck statistics off the `.nas`: quad ratio, free
   edges per 1k, and `--blocks` for per-component area and bbox. This is how you
   tell a genuinely fragmented mid-surface from an inner-wall/outer-wall part.
-- `scripts/rescue_midsurf.py` - same second pass on `MidSurfAuto`; mesh-only output,
-  keep only if a free mesh is acceptable.
+- `scripts/casting_midsurf.py` - **second pass**, two paths: `autosurf` (default,
+  `MidSurfAuto`, one connected patch, ~70 s/part) and `middle` (`MiddleGeometry` +
+  your own engine, ~8 s/part, discrete faces). See 0e.
+- `scripts/rescue_midsurf.py` - older standalone `MidSurfAuto` wrapper; superseded
+  by `casting_midsurf.py --casting autosurf`, kept for the ad-hoc single part.
 - `scripts/inspect_model.py` - read-only survey: entity counts, per-part bbox and
   area, property thickness, deck verdict.
 - `references/ansa-api-verified.md` - exact signatures, versions, negative results.
