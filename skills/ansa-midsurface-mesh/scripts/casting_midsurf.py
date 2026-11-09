@@ -14,25 +14,31 @@
     exec(open(r"<skill>/scripts/casting_midsurf.py", encoding="utf-8").read(), globals())
     RESULT
 
-Why Casting and not MidSurfAuto
--------------------------------
-`base.Skin` gives up on parts that are still perfectly shellable, so a second pass
-is needed. `base.MidSurfAuto` can do it, but it is a **mesher**: it emits a part of
-shells and no faces at all, and it meshes with its own algorithm. On one bracket it
-produced "Middle Skin Shells" - 1306 SHELL / 0 FACE - so its result can neither be
-re-meshed nor inspected as geometry.
+Two paths, and the default changed on 2026-11-09
+-----------------------------------------------
+**`autosurf` (default)** - `base.MidSurfAuto` extracts the surface *and* meshes it
+*and* stitches it, in one call. On a rear crash absorber (203 faces, 3.9 mm walls)
+it returned **one connected patch of 24 017 shells in 65 s**.
 
-`base.MiddleGeometry(faces, thickness_tolerance)` is the same Casting algorithm with
-the meshing stripped out. ANSA logs `Middle-Casting time` during MidSurfAuto, and
-MiddleGeometry returns `faces_success_rate`, `perimeters_success_rate`,
-`problematic_faces` and the created `result_faces`. Measured on the parts Skin
-rejected for a 553-part body-in-white folder: 100% face success in 1-3 s, against 13-324 s
-for MidSurfAuto on the same parts.
+**`middle`** - `base.MiddleGeometry(faces, thickness_tolerance)` with the meshing
+stripped out, then the project's own engine (`mesh.Mesh` / Batch Mesh) driven by
+the handed `.ansa_mpar` / `.ansa_qual`. Faster (8 s) and every element comes from
+a controlled engine, but **the surface is discrete**. The same part came out as
+**5 disconnected blocks**, and `perimeters_success_rate` was 24.8% - the faces
+never really joined. Stitching afterwards made it worse: `RebuildTopology` gave
+10 blocks, and rebuilding topology before Casting dropped the perimeter rate to
+19.5%.
 
-So the split is: Casting extracts the surface, then the project's own meshing engine
-(`mesh.Mesh` or a Batch Mesh session, both driven by the handed `.ansa_mpar` and
-`.ansa_qual`) produces the elements. That keeps every element in this skill coming
-out of one of those two engines.
+So the trade is connectivity against control. A single-block mesh is worth more
+than a parameter-exact mesh that cannot be assembled, so `autosurf` is the default.
+Reach for `"casting": "middle"` only when the mpar/qual must be provably honoured
+and the part is known to survive as separate patches.
+
+`thick` is the one parameter that decides whether `MidSurfAuto` returns at all:
+1.0 on a 3.9 mm wall ran past 240 s with no result, 3.5 returned in 65 s. It is
+therefore taken from `DetectSolidDescription(estimate_thickness=True)` - the
+dominant bin of that histogram *is* the answer. `connect_weldings` did not change
+the block count on the test part (1 either way) but is left on.
 
 Thickness
 ---------
@@ -114,11 +120,182 @@ def write_gauge(deck, t, name=None):
     return done
 
 
+def count_blocks(deck):
+    """Number of connected components in the shell mesh (union-find on grid ids)."""
+    shells = base.CollectEntities(deck, None, "SHELL")
+    if not shells:
+        return 0
+    parent = {}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    roots = set()
+    for s in shells:
+        try:
+            v = base.GetEntityCardValues(deck, s, ["G1", "G2", "G3", "G4"])
+        except Exception:
+            continue
+        gs = []
+        for k in ("G1", "G2", "G3", "G4"):
+            val = v.get(k)
+            if not val:
+                continue
+            if isinstance(val, (list, tuple)):
+                val = val[0]
+            try:
+                gs.append(int(val))
+            except Exception:
+                pass
+        if len(gs) < 3:
+            continue
+        for g in gs:
+            parent.setdefault(g, g)
+        r0 = find(gs[0])
+        for g in gs[1:]:
+            r = find(g)
+            if r != r0:
+                parent[r] = r0
+        roots.add(find(gs[0]))
+    return len({find(g) for g in list(parent)})
+
+
+def autosurf_thick(faces, params):
+    """`thick` for MidSurfAuto.
+
+    It is the minimum wall thickness the algorithm searches for, and it is
+    **not** a free parameter: 1.0 on a 3.9 mm crash box makes MidSurfAuto run
+    past 240 s without returning; 3.5 returns a single connected patch in 65 s.
+    So take the dominant wall from DetectSolidDescription, which is exactly the
+    histogram MidSurfAuto wants.
+    """
+    if params.get("autosurf_thick"):
+        return float(params["autosurf_thick"])
+    try:
+        d = base.DetectSolidDescription(faces, estimate_thickness=True)
+        hist = d[0] if isinstance(d, (list, tuple)) and d else {}
+        if isinstance(hist, dict) and hist:
+            return float(max(hist.items(), key=lambda kv: kv[1])[0])
+    except Exception:
+        pass
+    return float(params.get("autosurf_thick_fallback", 3.0))
+
+
+def cast_autosurf(cat, params):
+    """MidSurfAuto path: one continuous middle-surface mesh in a single call.
+
+    Differs from the MiddleGeometry path in what it buys and what it costs:
+
+     * buys **one connected patch**. MiddleGeometry returns discrete faces whose
+       perimeters are mostly unpaired (24.8% on a rear crash absorber), so the
+       mesh breaks into 5 blocks that no stitching recovers - RebuildTopology
+       after the fact made it 10.
+     * costs **control over the mesher**. MidSurfAuto emits SHELL only, no FACE,
+       and meshes with its own algorithm, so `.ansa_mpar` / `.ansa_qual` do not
+       drive it. `length` is the one knob it exposes.
+     * costs **time**: 65 s for a 203-face, 20 k-element part, against 8 s for
+       MiddleGeometry.
+    """
+    name = os.path.basename(cat)
+    stem = os.path.splitext(name)[0]
+    code = stem.split("_")[1] if "_" in stem else stem
+    log = {"part": name, "code": code, "path": "autosurf"}
+
+    session.New("discard")
+    base.Open(cat)
+    deck = base.CurrentDeck()
+    faces = solid_faces(deck)
+    log["in_faces"] = len(faces)
+    if not faces:
+        log.update({"status": "casting_failed", "note": "没有实体几何"})
+        return log
+
+    thick = autosurf_thick(faces, params)
+    log["autosurf_thick"] = thick
+
+    t0 = time.time()
+    try:
+        base.MidSurfAuto(thick=thick, faces=faces, part=str(params.get("part_action", "use_existing")),
+                         ret_ents=True,
+                         length=float(params.get("length", 5.0)),
+                         connect_weldings=bool(params.get("connect_weldings", True)))
+    except Exception as exc:
+        log.update({"status": "casting_failed",
+                    "note": "MidSurfAuto 失败: %s" % str(exc)[:250]})
+        return log
+    log["secs_autosurf"] = round(time.time() - t0, 1)
+
+    shells = base.CollectEntities(deck, None, "SHELL")
+    log["shells"] = len(shells)
+    if not shells:
+        log.update({"status": "casting_failed",
+                    "note": "MidSurfAuto 未产生壳（thick=%.2f 可能不在壁厚范围内）" % thick})
+        return log
+
+    log["blocks"] = count_blocks(deck)
+
+    # MidSurfAuto leaves the source solids in the deck. Keeping them makes the
+    # saved database unreadable (the grey faces hide the mesh) and doubles its size.
+    orig = base.CollectEntities(deck, None, "FACE")
+    if orig:
+        try:
+            base.DeleteEntity(orig)
+            log["deleted_orig"] = len(orig)
+        except Exception as exc:
+            log["del_err"] = str(exc)[:120]
+
+    med, p2, p98, n_shells, n_sampled = measure(deck)
+    log.update({"sampled": n_sampled,
+                "T_median": round(med, 3) if med else None,
+                "T_p2": round(p2, 3) if p2 else None,
+                "T_p98": round(p98, 3) if p98 else None})
+    if not med:
+        log.update({"status": "mesh_failed", "note": "出了壳但读不到厚度"})
+        return log
+
+    spread = (p98 - p2) / med if med else 1.0
+    log["spread"] = round(spread, 3)
+    t_write = round(med, 2)
+    if spread <= float(params.get("tolerance", 0.15)):
+        log["props_written"] = write_gauge(deck, t_write, "%s_T%d" % (code, round(med * 100)))
+        log["status"] = "rescued"
+        log["note"] = ("MidSurfAuto 出壳 %d（%d 块），单一厚度 %.2f mm（离散 %.1f%%），用时 %.0f s"
+                       % (n_shells, log["blocks"], t_write, spread * 100, log["secs_autosurf"]))
+    else:
+        log["props_written"] = write_gauge(deck, t_write, "%s_T%d_suspect" % (code, round(med * 100)))
+        log["status"] = "rescued_var"
+        log["note"] = ("MidSurfAuto 出壳 %d（%d 块），厚度 %.2f-%.2f mm（中位 %.2f，离散 %.1f%%）"
+                       % (n_shells, log["blocks"], p2, p98, med, spread * 100))
+
+    out_dir = params.get("out_dir") or os.path.dirname(cat)
+    ansa_path = os.path.join(out_dir, "%s.ansa" % code)
+    nas_path = os.path.join(out_dir, "%s.nas" % code)
+    for m in base.CollectEntities(deck, None, "__MATERIALS__"):
+        base.SetEntityCardValues(deck, m, {"DEFINED": "YES"})
+    base.SaveAs(ansa_path)
+    log["ansa"] = ansa_path
+    if params.get("nas", True):
+        base.OutputNastran(filename=nas_path)
+        log["nas"] = nas_path
+        try:
+            log["nas_size"] = os.path.getsize(nas_path)
+        except OSError:
+            pass
+    return log
+
+
 def cast_one(cat, params):
     name = os.path.basename(cat)
     stem = os.path.splitext(name)[0]
     code = stem.split("_")[1] if "_" in stem else stem
-    log = {"part": name, "code": code}
+    # Default to MidSurfAuto: it is the only path that yields one connected patch.
+    # Set "casting": "middle" to get the old MiddleGeometry + own-mesher behaviour.
+    if str(params.get("casting", "autosurf")).lower() == "autosurf":
+        return cast_autosurf(cat, params)
+    log = {"part": name, "code": code, "path": "middle"}
     engine = str(params.get("engine", "mesh")).lower()
 
     session.New("discard")
