@@ -23,7 +23,9 @@ A closed thin-walled solid description (`FACE`/`CONS` present, `SOLID` and `SHEL
 at zero) that has to become a shell mesh.
 
 Not for tetrahedral/volume meshing, not for re-meshing an existing shell model, not
-for connections and welds.
+for connections and welds - parts are meshed independently and therefore share no
+nodes; assembling them into one deck is a separate problem with its own inputs and
+its own acceptance test.
 
 **Only two engines may produce elements: `mesh.Mesh` or a Batch Mesh session.**
 Anything else - including `MidSurfAuto`'s built-in mesher - is a third algorithm
