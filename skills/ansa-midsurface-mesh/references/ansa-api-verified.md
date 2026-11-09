@@ -537,3 +537,48 @@ for _ in range(3):
   area) even 16 `Skin` parameter combinations plus this repair produced nothing,
   so those bodies are not closed thin-wall solids whatever the thickness estimate
   says.
+
+## `base.MidSurfExtrusion` - reaches the shape check, then refuses
+
+```python
+ret = base.MidSurfExtrusion(min_thick=1.0, max_thick=6.0, length=4,
+                            elem_type="Mixed", constant_profile_ratio=0,
+                            faces=faces, ret_ents=False,
+                            property="use_current", part="use_current")
+```
+
+Docstring says **"Returns 0 on success or 1 on failure."** Every call on the 20
+parts that reached the Casting second pass returned **3** instead, in **0.1 s**,
+having created nothing. Swept these combinations - all gave 3 / 0.1 s / 0 shells:
+
+| varied | values tried |
+|---|---|
+| `part` / `property` | `use_existing`, `use_current`, `auto_create`, `id=1`, omitted |
+| `min_thick` / `max_thick` | 1.3/1.7 (histogram range), 1.0/6.0 (wide) |
+| `constant_profile_ratio` | 0 (check disabled), 0.5, 0.8 |
+| `faces` | explicit list, omitted (visible faces) |
+| style | keywords, positional, official-doc example verbatim |
+
+3 is not in the documented 0/1 pair, and 0.1 s is far too fast for any geometric
+work, so this reads as a **front-end shape gate** - "not an extruded profile" -
+rather than a broken call. Nothing to fix by passing different arguments.
+
+That check is also redundant here: `constant_profile_ratio` describes the same
+property (1.0 = purely extruded, <1.0 = pressed or bent afterwards), so the two
+gates agree that these parts are not extrusions.
+
+**Why the Casting second-pass list has no extruded parts at all.** `Extrusion` and
+`Skin` rest on the same premise - a constant cross-section with parallel walls.
+A genuine extruded profile is exactly what `Skin` handles on the first pass, so it
+never lands in the rescue list. The 20 parts here are multi-layer boxes and welded
+assemblies; the low length/width ratios (6-14) and the thickness histograms
+(97 % of the area on one gauge) both fit that, and none of them is an
+equal-section prism.
+
+**Do not use a "CV of node counts along the long axis" test to find extrusions.**
+It scores a uniformly-spaced multi-layer panel as low as 0.010, identical to a
+real profile, because evenly distributed elements say nothing about whether the
+cross-section is constant. Use `constant_profile_ratio` if the question matters.
+
+`base.MidSurfAuto` (`casting_midsurf.py --casting autosurf`) remains the path for
+these parts: one connected patch, ~70 s each.
