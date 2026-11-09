@@ -212,6 +212,15 @@ def cast_one(cat, params):
         if params.get("nas"):
             nas = os.path.join(out, code + ".nas")
             try:
+                # Same trap as in process_part: a CATPart import leaves a
+                # placeholder material with DEFINED=NO, and OutputNastran then
+                # writes PSHELL -> MID 1 with no MAT1 and no warning.
+                for m in base.CollectEntities(deck, None, "__MATERIALS__"):
+                    try:
+                        base.SetEntityCardValues(deck, m, {"DEFINED": "YES"})
+                    except Exception:
+                        pass
+                base.SaveAs(ansa_path)
                 if os.path.isfile(nas):
                     os.remove(nas)
                 base.OutputNastran(filename=nas)
@@ -223,14 +232,23 @@ def cast_one(cat, params):
 
 
 def run(params):
+    # Two entry points: a folder (walked in one ANSA session) or a single
+    # `catpart`. The single-part form is what `casting_batch.py` drives, one
+    # process per part, so a part that hangs cannot take the queue with it.
     folder = params.get("folder")
-    if not folder or not os.path.isdir(folder):
+    one = params.get("catpart")
+    if one:
+        if not os.path.isfile(one):
+            return {"ok": False, "error": "catpart not found: %s" % one}
+        files = [one]
+    elif not folder or not os.path.isdir(folder):
         return {"ok": False, "error": "folder not found: %s" % folder}
+    else:
+        files = sorted(os.path.join(dp, f) for dp, _, fs in os.walk(folder) for f in fs
+                       if f.lower().endswith(".catpart"))
     out = params.get("out_dir")
     if out:
         os.makedirs(out, exist_ok=True)
-    files = sorted(os.path.join(dp, f) for dp, _, fs in os.walk(folder) for f in fs
-                   if f.lower().endswith(".catpart"))
     progress = os.path.join(out, "_casting_progress.jsonl") if out else None
     done = {}
     if progress and os.path.isfile(progress) and params.get("resume", True):

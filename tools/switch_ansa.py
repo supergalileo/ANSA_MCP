@@ -22,6 +22,8 @@ ROOTS = [
     Path(r"F:\BETA_CAE_Systems"),
     Path(r"F:\BETA_CAE_Systems2021"),
     Path(r"C:\Program Files\BETA_CAE_Systems"),
+    Path(r"F:\Program Files (x86)\BETA_CAE_Systems"),
+    Path(r"F:\Program Files\BETA_CAE_Systems"),
     Path(r"D:\BETA_CAE_Systems"),
     Path(r"D:\Program Files\BETA_CAE_Systems"),
 ]

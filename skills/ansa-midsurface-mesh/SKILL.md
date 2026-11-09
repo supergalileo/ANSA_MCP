@@ -103,6 +103,19 @@ why the connector cannot survive this):
 It writes `_progress.jsonl`; finish with one `process_folder` call at `limit=0` to
 produce the summary.
 
+`ansa64.bat` is resolved at import time: `$ANSA_BAT`, then `$ANSA_HOME`, then the
+usual BETA install roots, newest folder first. Override with `--ana-bat` when the
+machine holds several releases - the run is only as good as the version printed
+by `base.Version`, so check it once per batch.
+
+When the batch has finished there is **no ANSA process left**, and
+`process_folder` cannot run outside ANSA (`base` is imported at module level).
+Write the deliverable tables with `scripts/make_summary.py` - plain Python, reads
+`_progress.jsonl`, applies the 0f gates and writes `汇总.csv` / `交付清单.csv` /
+`未解决清单.csv` / `校验不通过.csv`:
+
+    python scripts/make_summary.py --out <out> --target 5.0 [--connectivity]
+
 ### 0. Classify before touching anything
 
 `base.DetectSolidDescription(estimate_thickness=True)` is the sheet-metal test and
@@ -209,6 +222,15 @@ spread exceeds 15% of the median.
 MidSurfAuto emits a mesh-only part (**1306 SHELL / 0 FACE**, verified) with its own
 mesher, so use it only when a free mesh is explicitly acceptable.
 
+**Run the second pass one part per process** when the set is a rescue list, not a
+handful of brackets: `scripts/casting_batch.py` launches one `ansa64.bat` per part
+with a hard timeout. The parts that reach this pass are exactly the ones that
+**hang** rather than fail (`O067`/`O090` foam covers, `O139`/`O144`/`O145` NVH
+strips), and in a single session the first hang eats the rest of the queue.
+
+    python scripts/casting_batch.py --src <hard_parts> --out <out>/casting \
+        --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --tol 2.0 --timeout 240
+
 ### 0f. Verify before reporting
 
 All of these must hold, or the result is not done:
@@ -305,10 +327,17 @@ Say that parts are meshed independently and therefore share no nodes.
   worker subsets, mandatory exception list.
 - `scripts/mesh_engine.py` - meshing only (`mesh.Mesh` or Batch Mesh).
 - `scripts/casting_midsurf.py` - **second pass**: `MiddleGeometry` (faces only) then
-  the chosen engine. Use for every part Skin refuses.
+  the chosen engine. Use for every part Skin refuses. Accepts a `folder` or a
+  single `catpart`.
+- `scripts/casting_batch.py` - the same second pass as **one ANSA process per
+  part**, with a per-part timeout: a part that hangs costs one part, not the queue.
 - `scripts/parallel_batch.py` - N ANSA batch processes over one folder, outside the
   MCP path: hardlinked slices, per-worker progress, stall watchdog, auto-restart.
   The only sane way to run hundreds of parts.
+- `scripts/make_summary.py` - plain-Python reporting for a finished `parallel_batch`
+  run: reads `_progress.jsonl`, applies the 0f gates (including "does the `.nas`
+  really carry `MAT1`"), writes the four deliverable CSVs, and can scan every deck
+  for disjoint components.
 - `scripts/rescue_midsurf.py` - same second pass on `MidSurfAuto`; mesh-only output,
   keep only if a free mesh is acceptable.
 - `scripts/inspect_model.py` - read-only survey: entity counts, per-part bbox and
