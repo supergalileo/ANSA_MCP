@@ -281,6 +281,41 @@ Check `grep '^MAT1' file.nas`, not the return code. Creating a fresh MAT1 and
 pointing `PSHELL.MID1` at it does not help: a new entity has the same
 `DEFINED = NO`.
 
+### 0h. Sort the output before handing it over
+
+A finished batch leaves 900+ files in one flat directory - 540 `.ansa`, 400 `.nas`,
+plus driver logs. Nobody can tell a success from a rescue a week later. Run:
+
+    python scripts/organize_output.py --out <out>            # dry run, prints the plan
+    python scripts/organize_output.py --out <out> --apply    # move + write lists
+
+It sorts by the `状态` column of `汇总.csv` into six stage folders, writes a
+`_清单.csv` into each, and generates `README.md` at the root:
+
+| folder | comes from | contents |
+|---|---|---|
+| `01_紧固件` | `hardware` | standard parts, `.ansa` only, no mesh |
+| `02_Skin成功` | `done` | `.ansa` + `.nas` |
+| `03_Skin失败` | all non-`done` | **process record only** - a list with a `去向` column, no products |
+| `04_Casting成功` | `rescued`, `rescued_var` | `.ansa` + `.nas` |
+| `05_最终失败` | `timeout`, `casting_partial`, `casting_failed` | `.ansa` (for debugging) + reason |
+| `06_玻璃_未纳入` | `not_sheet_metal` | `.ansa` + `.nas`, not counted in the delivery |
+
+Two traps this script handles, both hit for real:
+
+- **The same part number exists twice.** The Skin pass writes `<id>.ansa` at the
+  output root; the Casting pass writes the *good* one into `out/casting/`. The root
+  copy is the failed Skin database and is consistently smaller (8.2 MB vs 13.6 MB
+  on one part). The script prefers `casting/` and parks the stale copy in
+  `_工作目录/_旧版本_Skin阶段/`. Verify by size before trusting either.
+- **Parts without a `汇总.csv` row** are leftovers from failed runs. They go to
+  `05_最终失败`, not silently dropped.
+
+The script is idempotent: already-sorted files stay put, so re-running after a
+partial batch is safe. Its reconciliation table prints `应有件 / 待移动 / 已在位`
+and flags any folder whose file count disagrees with the summary - treat a
+non-empty `差 N` column as a bug, not a rounding error.
+
 ## Decision rules that matter
 
 **`max_thickness` filters, it does not clamp.** A part above the cap returns 0 and
@@ -357,6 +392,9 @@ Say that parts are meshed independently and therefore share no nodes.
   run: reads `_progress.jsonl`, applies the 0f gates (including "does the `.nas`
   really carry `MAT1`" and "two rows sharing one output path"), writes the four
   deliverable CSVs, and can scan every deck for disjoint components.
+- `scripts/organize_output.py` - sorts a flat output directory into the six stage
+  folders of 0h, writes a `_清单.csv` per folder and a `README.md` at the root.
+  Idempotent, dry-run by default. Run it before every handover.
 - `scripts/deck_stats.py` - per-deck statistics off the `.nas`: quad ratio, free
   edges per 1k, and `--blocks` for per-component area and bbox. This is how you
   tell a genuinely fragmented mid-surface from an inner-wall/outer-wall part.
