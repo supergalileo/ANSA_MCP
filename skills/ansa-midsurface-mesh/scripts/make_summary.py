@@ -335,10 +335,31 @@ def main():
                         gate["notes"].append(note)
             if gate["fails"]:
                 failed_gate.append((rec.get("code"), gate["fails"]))
-        row = row_of(rec, gate, conn)
+        row = row_of(rec, gate, None)
         cast = casting.get(part)
         if cast:
             overlay_casting(row, cast, args.target, args.p50_tol)
+            # Fragmentation is the failure mode of the Casting path (a
+            # `MiddleGeometry` result is not stitched), so the scan has to run on
+            # the deck that was actually delivered, not on the main-pass one -
+            # a `skin_failed` part has no main-pass deck at all.
+            if args.connectivity and row.get("nas") and os.path.isfile(row["nas"]):
+                try:
+                    conn = nas_components(row["nas"])
+                except Exception as exc:
+                    row["备注"] = (row["备注"] + "；连通块分析失败 %s" % str(exc)[:60]).strip("；")
+                if conn:
+                    row["连通块"] = conn["components"]
+                    row["最大块单元"] = conn["largest"]
+                    if conn["big_components"] > 1:
+                        note = ("中面分裂为 %d 块（最大 %d 单元）"
+                                % (conn["components"], conn["largest"]))
+                        if conn["big_components"] > 3:
+                            row["校验"] = (row["校验"] + "；" + note).strip("；")
+                        else:
+                            row["备注"] = (row["备注"] + "；" + note).strip("；")
+        elif conn is not None:
+            row.update({"连通块": conn["components"], "最大块单元": conn["largest"]})
         rows.append(row)
 
     # A part that was begun and never ended is only a crash once it has burned
@@ -360,6 +381,25 @@ def main():
                          "校验": "",
                          "原因": "只记录到 1 次开始、0 次结束：仍在处理，或驱动被中断",
                          "ansa": "", "nas": ""})
+
+    # A shared output path is silent data loss: two parts write the same .ansa and
+    # the last finisher wins, while both rows look complete because the file does
+    # exist. On the 540-part BIW body 44 part numbers sat at 2-4 assembly
+    # positions and 115 files were overwritten without any error anywhere.
+    shared = collections.Counter()
+    for r in rows:
+        for col in ("ansa", "nas"):
+            if r.get(col) and r.get("状态") in DELIVERED:
+                shared[r[col].lower()] += 1
+    for r in rows:
+        if r.get("状态") not in DELIVERED:
+            continue
+        clash = [c for c in ("ansa", "nas")
+                 if r.get(c) and shared[r[c].lower()] > 1]
+        if clash:
+            msg = "输出文件被 %d 件共用（%s）" % (shared[r[clash[0]].lower()],
+                                                 "/".join(clash))
+            r["校验"] = (r.get("校验", "") + "；" + msg).strip("；")
 
     cols = list(COLS)
     if args.connectivity:

@@ -103,6 +103,13 @@ why the connector cannot survive this):
 It writes `_progress.jsonl`; finish with one `process_folder` call at `limit=0` to
 produce the summary.
 
+It also writes `_driver/stems.json` - the output-stem map decided on the whole
+`--src` - and hands it to every worker. That is not optional: a worker only sees
+its own slice, so a part number that appears at several assembly positions gets
+the plain code in each slice and the files overwrite each other. On the 540-part
+BIW body 44 part numbers sat at 2-4 positions: the first run delivered 452 `.ansa`
+for 540 parts and 361 `.nas` for 382 shells, **with no error anywhere**.
+
 `ansa64.bat` is resolved at import time: `$ANSA_BAT`, then `$ANSA_HOME`, then the
 usual BETA install roots, newest folder first. Override with `--ana-bat` when the
 machine holds several releases - the run is only as good as the version printed
@@ -242,7 +249,17 @@ All of these must hold, or the result is not done:
 | per-part `T` | equals the measured value, and is uniform |
 | `elements_without_T` | **0 for a deliverable deck**, read from the PSHELL state |
 | `placeholder_gauge` | any PSHELL still at `T = 1.0` means the gauge never arrived |
+| **no shared output path** | two rows writing the same `.ansa` = one file silently lost |
+| free-floating islands | a component of <=20 elements or <1% of the area is an unrestrained body; it makes the stiffness matrix singular |
+| quad ratio | 0.8-0.95 on decks of 1000+ elements; ignore it below that, where the perimeter/count ratio dominates |
 | faces left | only for the parts that were never shelled |
+
+`scripts/deck_stats.py` measures the last three off a `.nas` without ANSA:
+quad ratio, free edges per 1k elements, and `--blocks` for per-component area and
+bbox. Use `--blocks` before calling a multi-component mid-surface "fragmented": on
+a 4-block crash box the blocks were 60 000-341 000 mm2 walls (inner wall, outer
+wall, bulkheads), which is a normal BIW part, while the same scan found **three
+2-16 element islands** elsewhere that really were debris.
 
 ### 0g. Exporting the deck
 
@@ -336,8 +353,11 @@ Say that parts are meshed independently and therefore share no nodes.
   The only sane way to run hundreds of parts.
 - `scripts/make_summary.py` - plain-Python reporting for a finished `parallel_batch`
   run: reads `_progress.jsonl`, applies the 0f gates (including "does the `.nas`
-  really carry `MAT1`"), writes the four deliverable CSVs, and can scan every deck
-  for disjoint components.
+  really carry `MAT1`" and "two rows sharing one output path"), writes the four
+  deliverable CSVs, and can scan every deck for disjoint components.
+- `scripts/deck_stats.py` - per-deck statistics off the `.nas`: quad ratio, free
+  edges per 1k, and `--blocks` for per-component area and bbox. This is how you
+  tell a genuinely fragmented mid-surface from an inner-wall/outer-wall part.
 - `scripts/rescue_midsurf.py` - same second pass on `MidSurfAuto`; mesh-only output,
   keep only if a free mesh is acceptable.
 - `scripts/inspect_model.py` - read-only survey: entity counts, per-part bbox and

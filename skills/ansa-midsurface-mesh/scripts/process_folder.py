@@ -234,8 +234,25 @@ def run(params):
     run_part, part_code = load_pipeline(params.get("scripts_dir"))
     # Stems must be decided on the whole folder, not on this worker's slice,
     # otherwise a duplicate part number lands in two groups and both write the
-    # same file name.
-    stems = unique_stems(all_files, part_code)
+    # same file name. Under `parallel_batch` the caller hands the map in, because
+    # a worker only ever sees its own slice - the defect that produced 361 `.nas`
+    # for 382 shells on the 540-part BIW run: 44 part numbers sit at 2-4 assembly
+    # positions, so 115 files were silently overwritten by a sibling.
+    stems_file = params.get("stems_file")
+    if stems_file and os.path.isfile(stems_file):
+        with open(stems_file, encoding="utf-8") as fh:
+            shared = json.load(fh)
+        stems = {cat: shared.get(os.path.basename(cat)) or part_code(cat)
+                 for cat in all_files}
+        dup = {}
+        for cat, st in stems.items():
+            dup.setdefault(st, []).append(os.path.basename(cat))
+        collisions = {k: v for k, v in dup.items() if len(v) > 1}
+        if collisions:
+            print("STEM_COLLISION %d stems shared by several parts: %s"
+                  % (len(collisions), list(collisions.items())[:3]))
+    else:
+        stems = unique_stems(all_files, part_code)
     progress_path = (params.get("progress") or
                      (os.path.join(out_dir, "_progress.jsonl") if out_dir else None))
     hw_area = float(params.get("hardware_area", 4000.0))

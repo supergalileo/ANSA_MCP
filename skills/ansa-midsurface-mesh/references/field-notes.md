@@ -225,3 +225,35 @@ block held 118 parts and every one was a standard part; the Chinese Nomenclature
 agreed on 115 of them and covered the 3 with unread names. Eight large standard
 parts (threaded bushings 11 636 mm2, guide sleeves 37 387 mm2) were missed by the
 area rule alone and recovered by the name rule.
+
+## Repairing a finished batch: two traps
+
+Both hit while fixing the 540-part BIW run in place.
+
+**The output-stem map must be built from the whole `--src`, not per worker.**
+On that folder 44 part numbers sit at 2-4 assembly positions. Each worker computed
+stems from its own slice, so every instance got the plain code and wrote the same
+file. The delivery looked clean: 540 rows in `汇总.csv`, every `ansa`/`nas` path
+existing - they just pointed at a sibling's file. Counted from disk: **452 `.ansa`
+for 540 parts, 361 `.nas` for 382 shells.** `parallel_batch.py` now writes
+`_driver/stems.json` from the full list and passes it down; `make_summary.py`
+fails any row whose output path another row also claims. Check
+`len(unique nas) == n_done` before shipping anything.
+
+**Re-running into an existing `--out` is not possible on this host.** `process_part`
+removes the old `.ansa`/`.nas` before writing, and the host's
+`SAFE_DELETE_BULK_CONFIRM_REQUIRED` guard counts deletions per turn with a
+threshold of 50 - past it the guard kills the process, and ANSA workers die
+mid-queue with `rc=1` and no traceback (the only clue is one `[safe-delete]` line
+in the worker's stdout). Repair in that situation: write the re-run to a fresh
+subfolder and `os.replace` the files in, moving any existing target to `*.stale`
+first rather than deleting it.
+
+**Islands are not fragmentation.** `deck_stats.py --blocks` on the 4 multi-block
+parts showed blocks of 60 000-341 000 mm2 (inner wall / outer wall / bulkheads) -
+normal BIW geometry. The same scan found the real debris: a 2-element / 2 mm2
+island on two instances of `A0072600194` and two 16-element slivers on
+`A0072600969`. Small and floating, they are still not harmless - an island has no
+connection and no boundary condition, so the stiffness matrix gets a singular
+block. Removing them took one ANSA pass each and dropped `A0072600969` from 9
+components to 7.

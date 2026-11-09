@@ -43,6 +43,7 @@ import collections
 import json
 import os
 import pprint
+import re
 import shutil
 import subprocess
 import sys
@@ -123,6 +124,31 @@ def finished_parts(progress_files):
             if rec.get("status"):
                 seen.add(rec.get("part"))
     return seen
+
+
+def build_stems(files):
+    """Authoritative output stem per input file, decided on the **whole** src list.
+
+    Must run here, not inside a worker: a worker only sees its own slice, so a
+    part number that appears at two assembly positions and lands in two slices
+    gets the plain code twice and one file overwrites the other. On the 540-part
+    BIW body 44 part numbers sit at 2-4 positions: 115 names collided and the run
+    delivered 452 `.ansa` for 540 parts without reporting anything.
+    """
+    seen, out = {}, {}
+    for path in sorted(files, key=os.path.basename):
+        base = os.path.basename(path)
+        stem = os.path.splitext(base)[0]
+        parts = stem.split("_")
+        code = parts[1] if len(parts) > 1 and parts[1] else stem
+        if code not in seen:
+            seen[code] = 1
+            out[base] = code
+        else:
+            seen[code] += 1
+            m = re.match(r"^([A-Za-z]\d+)_", base)
+            out[base] = "%s__%s" % (code, m.group(1) if m else seen[code])
+    return out
 
 
 def link_slice(files, dest):
@@ -222,6 +248,9 @@ def main():
         buckets = [b[:args.limit] for b in buckets]
 
     run_tag = "r" + time.strftime("%H%M%S")
+    stems_path = os.path.join(drv, "stems.json")
+    with open(stems_path, "w", encoding="utf-8") as fh:
+        json.dump(build_stems(files), fh, ensure_ascii=False)
     procs = {}
     for i, bucket in enumerate(buckets):
         w = "w%d" % (i + 1)
@@ -229,6 +258,7 @@ def main():
         link_slice(bucket, wdir)
         wparam = {"folder": wdir.replace("\\", "/"),
                   "out_dir": out.replace("\\", "/"),
+                  "stems_file": stems_path.replace("\\", "/"),
                   "progress": os.path.join(drv, w + ".jsonl").replace("\\", "/")}
         script_path = os.path.join(slices, w + ".py")
         write_runner(script_path, wparam, args.mpar, args.qual, args.engine,
