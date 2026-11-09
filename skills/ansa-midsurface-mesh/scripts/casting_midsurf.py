@@ -164,13 +164,21 @@ def count_blocks(deck):
 
 
 def autosurf_thick(faces, params):
-    """`thick` for MidSurfAuto.
+    """`thick` for MidSurfAuto = the GUI's "Minimum Thickness".
 
-    It is the minimum wall thickness the algorithm searches for, and it is
-    **not** a free parameter: 1.0 on a 3.9 mm crash box makes MidSurfAuto run
-    past 240 s without returning; 3.5 returns a single connected patch in 65 s.
-    So take the dominant wall from DetectSolidDescription, which is exactly the
-    histogram MidSurfAuto wants.
+    It is a **search lower bound**, i.e. a speed knob, not a quality knob. Sweeping
+    it on a 203-face rear crash absorber (walls 2.5-5.4 mm) changed only the time:
+
+        thick  1.0   2.0   3.0   3.5   4.0   4.5
+        secs  133    91    74    68    65    59
+        shell 23923 24178 23859 24281 24516 24195      (+-3%, noise)
+
+    So a small `thick` is not wrong, just slow: it widens the range of face pairs
+    the algorithm is willing to try. Anything near the real wall thickness is fine.
+
+    Take the dominant bin of `DetectSolidDescription(estimate_thickness=True)` -
+    that histogram is exactly what this parameter wants, and it lands within a
+    few tenths of the fastest useful value.
     """
     if params.get("autosurf_thick"):
         return float(params["autosurf_thick"])
