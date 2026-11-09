@@ -32,7 +32,7 @@ Stitching APIs were tried and do not fit: `FacesFuseProximities` requires two
 faces, `mesh.AutoPaste` returned 0 and changed nothing.
 
 Practical split: use Casting at tol 2.0 and accept the remaining patches as
-separate walls joined by welds/RBE3 (normal BIW practice), or run `MidSurfAuto`
+separate walls joined by welds/RBE3 (normal automotive practice), or run `MidSurfAuto`
 on those specific parts as an explicit exception.
 
 ## Other mid-surface entry points in ANSA
@@ -51,7 +51,7 @@ usable geometry path.
 
 ## Why long batches must not go through the MCP server
 
-Measured on a 540-part BIW folder, four disconnects in one afternoon. The chain:
+Measured on a 540-part body-in-white folder, four disconnects in one afternoon. The chain:
 
 1. ANSA's kernel dies outright on some geometry - the log ends with
    `running... finished.` and no Python traceback at all, so the script never sees
@@ -108,7 +108,7 @@ crashes ANSA **in this context**". Retry it alone before writing it off.
 
 ## Casting second pass - the numbers
 
-Seven parts a 553-part BIW folder had rejected via `Skin`, run through
+Seven parts a 553-part body-in-white folder had rejected via `Skin`, run through
 `scripts/casting_midsurf.py` with `engine="mesh"` and the project's 5 mm
 `.ansa_mpar` / `.ansa_qual`:
 
@@ -217,7 +217,7 @@ produced 4.85 mm elements on a 5 420 mm2 face). `mesh.SetMeshParamTargetLength`
 rejects every label tried (`''`, `'default'`, `'Target Length'`, `'shell'`, ...).
 Only `MidSurfAuto(length=...)` and the mpar-driven engines honour a size.
 
-## 553-part BIW folder - classification counts
+## A 553-part and a 540-part body - classification counts
 
 After the name/part-number gate (see `SKILL.md`): 553 parts = 383 `done`,
 129 `hardware`, 29 `not_sheet_metal`, 12 `skin_failed`. The `A007S` part-number
@@ -226,9 +226,14 @@ agreed on 115 of them and covered the 3 with unread names. Eight large standard
 parts (threaded bushings 11 636 mm2, guide sleeves 37 387 mm2) were missed by the
 area rule alone and recovered by the name rule.
 
+A later full run on a 540-part target set (weld/adhesive references excluded):
+382 `done` via Skin, 129 `hardware`, 20 recovered by the Casting second pass,
+9 unresolved - 4 of them foam covers / NVH strips that need a mass-equivalent
+model rather than a mid-surface. 1 742 602 shell elements, no crash, no restart.
+
 ## Repairing a finished batch: two traps
 
-Both hit while fixing the 540-part BIW run in place.
+Both hit while fixing the 540-part run in place.
 
 **The output-stem map must be built from the whole `--src`, not per worker.**
 On that folder 44 part numbers sit at 2-4 assembly positions. Each worker computed
@@ -251,7 +256,7 @@ first rather than deleting it.
 
 **Islands are not fragmentation.** `deck_stats.py --blocks` on the 4 multi-block
 parts showed blocks of 60 000-341 000 mm2 (inner wall / outer wall / bulkheads) -
-normal BIW geometry. The same scan found the real debris: a 2-element / 2 mm2
+normal automotive body geometry. The same scan found the real debris: a 2-element / 2 mm2
 island on two instances of `A0072600194` and two 16-element slivers on
 `A0072600969`. Small and floating, they are still not harmless - an island has no
 connection and no boundary condition, so the stiffness matrix gets a singular

@@ -18,14 +18,18 @@ MCP_JSON = Path.home() / ".workbuddy" / "mcp.json"
 
 # 常见安装根目录，按需增补
 ROOTS = [
-    Path(r"F:\ANSA"),
-    Path(r"F:\BETA_CAE_Systems"),
-    Path(r"F:\BETA_CAE_Systems2021"),
     Path(r"C:\Program Files\BETA_CAE_Systems"),
-    Path(r"F:\Program Files (x86)\BETA_CAE_Systems"),
-    Path(r"F:\Program Files\BETA_CAE_Systems"),
+    Path(r"C:\Program Files (x86)\BETA_CAE_Systems"),
     Path(r"D:\BETA_CAE_Systems"),
     Path(r"D:\Program Files\BETA_CAE_Systems"),
+    Path(r"D:\Program Files (x86)\BETA_CAE_Systems"),
+    Path(r"E:\BETA_CAE_Systems"),
+    Path(r"E:\Program Files\BETA_CAE_Systems"),
+    Path(r"E:\Program Files (x86)\BETA_CAE_Systems"),
+    Path(r"F:\ANSA"),
+    Path(r"F:\BETA_CAE_Systems"),
+    Path(r"F:\Program Files\BETA_CAE_Systems"),
+    Path(r"F:\Program Files (x86)\BETA_CAE_Systems"),
 ]
 
 

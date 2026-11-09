@@ -44,7 +44,7 @@ below). Never declare a part un-shellable on Skin's verdict alone.
 - Target element length, and the project's `.ansa_mpar` / `.ansa_qual`.
 - `max_thickness` is a **hard filter, not a clamp** - a wall thicker than it makes
   Skin return 0 and the part then looks exactly like a solid. Automotive gauges go
-  to 3.5 mm, so 3.0 is too tight for a BIW model: use 4.0-6.0.
+  to 3.5 mm, so 3.0 is too tight for a body-in-white model: use 4.0-6.0.
 - Verified on ANSA 24.1.2 with a NASTRAN deck. On another release, re-verify before
   trusting the rest.
 
@@ -88,10 +88,6 @@ RESULT
 from `_progress.jsonl`, and returns `RESULT["summary"]` with `by_status` and
 `issues`. Same params plus `folder` / `out_dir`.
 
-Run 3-4 workers on disjoint file lists for a big folder: one process needed ~80 min
-for the last 130 parts, three brought it under 35 (≈0.4-0.9 GB each; 16 cores / 64 GB
-is comfortable).
-
 For anything over a few hundred parts, drive it with `scripts/parallel_batch.py`
 instead of repeated `process_folder` calls - it runs outside the MCP server, so a
 crash costs one part instead of a reconnect (`references/field-notes.md` explains
@@ -100,6 +96,10 @@ why the connector cannot survive this):
     python scripts/parallel_batch.py --src <parts> --out <out> \
         --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --workers 4
 
+Workers scale roughly linearly until RAM or license slots run out: 6 workers on
+16 cores / 64 GB took 540 parts in ~30 min (≈0.4-0.9 GB per worker). Re-run the
+same command to resume - finished parts are read from the progress files.
+
 It writes `_progress.jsonl`; finish with one `process_folder` call at `limit=0` to
 produce the summary.
 
@@ -107,7 +107,7 @@ It also writes `_driver/stems.json` - the output-stem map decided on the whole
 `--src` - and hands it to every worker. That is not optional: a worker only sees
 its own slice, so a part number that appears at several assembly positions gets
 the plain code in each slice and the files overwrite each other. On the 540-part
-BIW body 44 part numbers sat at 2-4 positions: the first run delivered 452 `.ansa`
+body-in-white model 44 part numbers sat at 2-4 positions: the first run delivered 452 `.ansa`
 for 540 parts and 361 `.nas` for 382 shells, **with no error anywhere**.
 
 `ansa64.bat` is resolved at import time: `$ANSA_BAT`, then `$ANSA_HOME`, then the
@@ -143,7 +143,7 @@ the gauge estimate in one call: a list whose first element is
 Run this **before** classification. Two signals, in order:
 
 1. **Part-number block** - `standard_code_pattern` (default `S\d{6}$`). On a
-   553-part BIW body the `A007S` block held 118 parts and every one was a standard
+   553-part body-in-white model the `A007S` block held 118 parts and every one was a standard
    part.
 2. **CATIA Nomenclature** - a CATPart carries its Chinese name as
    `_Nomenclature` + one length byte + UTF-8 (`read_nomenclature`; ANSA only
@@ -258,7 +258,7 @@ All of these must hold, or the result is not done:
 quad ratio, free edges per 1k elements, and `--blocks` for per-component area and
 bbox. Use `--blocks` before calling a multi-component mid-surface "fragmented": on
 a 4-block crash box the blocks were 60 000-341 000 mm2 walls (inner wall, outer
-wall, bulkheads), which is a normal BIW part, while the same scan found **three
+wall, bulkheads), which is a normal automotive body part, while the same scan found **three
 2-16 element islands** elsewhere that really were debris.
 
 ### 0g. Exporting the deck

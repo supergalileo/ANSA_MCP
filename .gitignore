@@ -5,7 +5,8 @@ out/
 .ansa_mcp_state.json
 .ansa_mcp_ledger.json
 
-# 本机生成的 ANSA API 索引（体积大、随安装版本变化，不入库）
+# 本机生成的 ANSA API 索引（体积大、随安装版本变化）。
+# 打包分发时请附带一份，否则 ansa_api_search 无数据可用。
 tools/ansa_api_index.json
 
 # Python

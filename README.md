@@ -22,9 +22,14 @@
 | `ansa_iap.py` | IAP 协议实现（重写了官方参考实现） |
 | `ansa_ledger.py` | 写操作幂等台账 |
 | `tests/` | 三层测试，见 [tests/README.md](tests/README.md) |
+| `tools/switch_ansa.py` | 列出本机 ANSA 安装并切换 MCP 配置里的 `ANSA_HOME` |
+| `tools/build_api_index.py` | 从 ANSA 自带 Sphinx 文档生成 `ansa_api_search` 索引 |
 | `skills/ansa-midsurface-mesh/` | 抽中面 + 划网格 Skill |
 | `skills/ansa-midsurface-mesh/scripts/process_part.py` | 单件全流程：钣金判定 → 修复 → `Skin` → property 命名 → 划网格 → 保存 |
 | `skills/ansa-midsurface-mesh/scripts/process_folder.py` | 目录批量：`_progress.jsonl` 断点续跑、分块、并行 worker、异常清单 |
+| `skills/ansa-midsurface-mesh/scripts/parallel_batch.py` | 多进程批量驱动（绕开 MCP，几百件以上用） |
+| `skills/ansa-midsurface-mesh/scripts/make_summary.py` | 跑完出四张交付表 + 质检门 |
+| `skills/ansa-midsurface-mesh/scripts/deck_stats.py` | 直接从 `.nas` 算 quad 比、自由边、分块 |
 | `skills/ansa-midsurface-mesh/scripts/mesh_engine.py` | 两条网格路线（`mesh.Mesh` / Batch Mesh），由 `.ansa_mpar` + `.ansa_qual` 驱动 |
 
 ## 工作原理
@@ -61,6 +66,8 @@ ANSA 官方参考实现（`<ANSA>/scripts/RemoteControl/`）有三个问题，�
 
 ## 安装
 
+**逐步安装说明见 [USAGE.md](USAGE.md)**（含 MCP 配置、Skill 安装、常见问题）。下面是速查：
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -85,7 +92,7 @@ pip install -r requirements.txt
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `ANSA_HOME` | `D:\Program Files\BETA_CAE_Systems\ansa_v23.0.0` | ANSA 安装目录 |
+| `ANSA_HOME` | 编译期兜底 `C:\Program Files\BETA_CAE_Systems\ansa_v23.0.0` | ANSA 安装目录，**每台机器必须显式设置** |
 | `ANSA_MCP_TIMEOUT` | `600` | 单次脚本执行的默认超时（秒） |
 | `ANSA_MCP_RESULT_LIMIT` | `120000` | 返回结果的最大字符数 |
 | `ANSA_MCP_WORKSPACE` | 未设置 | 设置后所有写出路径必须落在该目录内 |
@@ -243,7 +250,7 @@ RESULT
 ```python
 # 批量：一个目录几百件，断点续跑
 PARAMS = {
-    "folder": r"D:/proj/car_model_first",
+    "folder": r"D:/proj/parts",
     "out_dir": r"D:/out",
     "engine": "mesh",
     "mpar": r"D:/proj/5MM.ansa_mpar",
@@ -260,24 +267,21 @@ RESULT["summary"]["issues"]      # 必须汇报，不能只报成功数
 用 `only=<文件名清单>` 切不相交的子集、各自的 `_progress_w<n>.jsonl`、`write_summary=False`
 （并发重写同一个 CSV 会冲突）。
 
-在整车 553 个 CATPart 上的实测结果：
+在整车模型上的实测结果（ANSA 24.1.2，540 件目标，含标准件与厚板）：
 
 | 批次 | 零件 | 出网格 | 非钣金 / 抽不出中面 | 壳单元 |
 |---|---|---|---|---|
-| `car_model_first` | 289 | 278（96.2%） | 6 / 5 | 1 261 638 |
-| `BIW_总装_553` 剩余 | 264 | 103（39.0%） | 65 / 96 | 375 305 |
+| 主线（Skin） | 540 | 382（70.7%） | 129 标准件 / 9 未解决 | 1 742 602 |
+| Casting 二遍救援 | 24 | 20 | 4（需人工或质量等效） | 含在上行 |
 
-第二批成功率低是零件构成决定的：`B` 类车身钣金 60 件里 53 件成功（88%），
-其余是 `O`（连接件/支架/实体，186 件）、`R`（焊点/胶，13 件）、`G`（5 件厚板），本就不适合抽中面。
+标准件 129 件按件号/中文品名判定，不抽中面；9 件未解决里 4 件是泡沫/贴条类厚壁件。
 
 ### 两条网格路线
 
 `process_part.py` 是单件完整流水线（钣金判定 → 几何修复 → `Skin` 抽中面 → property 命名 → 划网格 → 保存）；
 `mesh_engine.py` 只负责划网格，用 `PARAMS["engine"]` 切换。两条都吃 `.ansa_mpar` + `.ansa_qual`，
-都**不负责抽中面**。
-
-`midsurface_mesh.py` 是最早的两遍法脚本（`MidSurfAuto` 建网格 + `GetShellThickness` 回写厚度），
-在没有 `.ansa_mpar` / `.ansa_qual` 时仍可用；有配置文件时应走 `process_part.py`，否则配置文件不会被使用。
+都**不负责抽中面**。没有 `.ansa_mpar` / `.ansa_qual` 时用 `rescue_midsurf.py`（`MidSurfAuto` 自带网格器），
+但那条路的网格不受项目判据文件控制，只在不要求网格规格时使用。
 
 | engine | 对应 GUI | 特点 |
 |---|---|---|

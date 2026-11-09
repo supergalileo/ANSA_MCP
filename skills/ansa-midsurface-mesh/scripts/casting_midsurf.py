@@ -26,7 +26,7 @@ re-meshed nor inspected as geometry.
 the meshing stripped out. ANSA logs `Middle-Casting time` during MidSurfAuto, and
 MiddleGeometry returns `faces_success_rate`, `perimeters_success_rate`,
 `problematic_faces` and the created `result_faces`. Measured on the parts Skin
-rejected for a 553-part BIW folder: 100% face success in 1-3 s, against 13-324 s
+rejected for a 553-part body-in-white folder: 100% face success in 1-3 s, against 13-324 s
 for MidSurfAuto on the same parts.
 
 So the split is: Casting extracts the surface, then the project's own meshing engine

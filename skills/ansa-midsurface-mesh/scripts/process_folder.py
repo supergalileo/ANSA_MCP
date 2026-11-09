@@ -59,6 +59,7 @@ try:
 except NameError:  # pragma: no cover
     from ansa import base, constants, mesh, session, utils, batchmesh
 
+
 def _scripts_dir(override=None):
     """Where process_part.py lives.
 
@@ -67,9 +68,15 @@ def _scripts_dir(override=None):
     the candidates and return the first that actually holds the file.
     """
     here = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ""
-    cands = [override, here,
-             r"C:/Users/Dongmiao/.workbuddy/skills/ansa-midsurface-mesh/scripts",
-             r"D:/workbuddySpace/hm/ANSA_MCP/skills/ansa-midsurface-mesh/scripts"]
+    cands = [override, here]
+    for env in ("ANSA_SKILL_SCRIPTS", "CLAUDE_SKILL_DIR"):
+        cands.append(os.environ.get(env))
+    if here:
+        # repo layout: <repo>/skills/ansa-midsurface-mesh/scripts, invoked from anywhere
+        cands.append(os.path.join(here, "..", "..", "ansa-midsurface-mesh", "scripts"))
+    home = os.path.expanduser("~")
+    cands += [os.path.join(home, ".workbuddy", "skills", "ansa-midsurface-mesh", "scripts"),
+              os.path.join(home, ".claude", "skills", "ansa-midsurface-mesh", "scripts")]
     for c in cands:
         if c and os.path.isfile(os.path.join(c, "process_part.py")):
             return c
@@ -236,7 +243,7 @@ def run(params):
     # otherwise a duplicate part number lands in two groups and both write the
     # same file name. Under `parallel_batch` the caller hands the map in, because
     # a worker only ever sees its own slice - the defect that produced 361 `.nas`
-    # for 382 shells on the 540-part BIW run: 44 part numbers sit at 2-4 assembly
+    # for 382 shells on a 540-part body-in-white run: 44 part numbers sit at 2-4 assembly
     # positions, so 115 files were silently overwritten by a sibling.
     stems_file = params.get("stems_file")
     if stems_file and os.path.isfile(stems_file):

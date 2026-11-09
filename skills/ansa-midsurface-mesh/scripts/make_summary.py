@@ -384,7 +384,7 @@ def main():
 
     # A shared output path is silent data loss: two parts write the same .ansa and
     # the last finisher wins, while both rows look complete because the file does
-    # exist. On the 540-part BIW body 44 part numbers sat at 2-4 assembly
+    # exist. On a 540-part body-in-white model 44 part numbers sat at 2-4 assembly
     # positions and 115 files were overwritten without any error anywhere.
     shared = collections.Counter()
     for r in rows:

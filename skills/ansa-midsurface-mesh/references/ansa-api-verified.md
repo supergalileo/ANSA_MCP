@@ -90,7 +90,7 @@ d["problematic_faces"]         # [] - inspect this, not only the rate
 d["result_faces"]              # the created middle-surface FACEs
 ```
 
-Verified on ANSA 24.1.2 against seven parts a 553-part BIW folder had rejected via
+Verified on ANSA 24.1.2 against seven parts a 553-part body-in-white folder had rejected via
 Skin: 100% face success on every one, 1-3 s each. The created entities are FACE
 only - `SHELL` stays 0 - so the result can be re-meshed by any engine. Meshing those
 faces with `mesh.Mesh` at the project's 5 mm mpar produced 96-21 298 shells, and

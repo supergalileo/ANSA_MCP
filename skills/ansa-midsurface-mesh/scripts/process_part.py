@@ -35,7 +35,7 @@ raises.
 
 Hardware
 --------
-A BIW folder is full of bolts, nuts and clips. They answer the thickness estimate
+A body-in-white folder is full of bolts, nuts and clips. They answer the thickness estimate
 like a panel but have no pair of offsettable surfaces, so Skin cannot work on them
 at any parameter setting. Two signals identify them, in this order:
 
@@ -528,7 +528,7 @@ def run(params):
             drop_parts(new_parts)
 
     if n_skin == 0:
-        # A BIW folder is full of bolts, nuts and clips. They look thin-walled to
+        # A body-in-white folder is full of bolts, nuts and clips. They look thin-walled to
         # the thickness estimate but have no pair of offsettable surfaces, so Skin
         # cannot work on them whatever the parameters. Their giveaway is size: on a
         # 553-part body, every standard part measured 360-3 412 mm2 while the

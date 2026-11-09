@@ -16,14 +16,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
 DEFAULT_CANDIDATES = [
-    Path(r"F:\ANSA\ansa_v23.1.1"),
-    Path(r"F:\BETA_CAE_Systems\ansa_v25.0.0"),
-    Path(r"F:\BETA_CAE_Systems2021\ansa_v21.0.1"),
-    Path(r"C:\Program Files\BETA_CAE_Systems\ansa_v23.0.0"),
+    Path(r"C:\Program Files\BETA_CAE_Systems"),
+    Path(r"C:\Program Files (x86)\BETA_CAE_Systems"),
+    Path(r"D:\BETA_CAE_Systems"),
+    Path(r"D:\Program Files\BETA_CAE_Systems"),
+    Path(r"E:\BETA_CAE_Systems"),
+    Path(r"F:\ANSA"),
+    Path(r"F:\BETA_CAE_Systems"),
+    Path(r"F:\Program Files\BETA_CAE_Systems"),
 ]
 
 FUNC_RE = re.compile(r"^\.\.\s+py:function::\s+(.+?)\s*$")
@@ -42,9 +47,18 @@ def find_ansa_home(explicit: str | None) -> Path:
         if not (p / "docs").is_dir():
             raise SystemExit(f"{p} 下没有 docs 目录，确认是 ANSA 安装根目录")
         return p
-    for c in DEFAULT_CANDIDATES:
-        if (c / "docs/extending/python_api/html/_sources").is_dir():
-            return c
+    home = os.environ.get("ANSA_HOME")
+    if home and (Path(home) / "docs/extending/python_api/html/_sources").is_dir():
+        return Path(home)
+    found = []
+    for root in DEFAULT_CANDIDATES:
+        if not root.is_dir():
+            continue
+        for d in sorted(root.iterdir(), reverse=True):
+            if (d / "docs/extending/python_api/html/_sources").is_dir():
+                found.append(d)
+    if found:
+        return found[0]
     raise SystemExit("没找到带 Sphinx 文档的 ANSA 安装，用 --ansa-home 指定")
 
 

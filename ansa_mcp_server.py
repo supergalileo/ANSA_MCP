@@ -2090,6 +2090,8 @@ def _api_index_path() -> Path | None:
     if env and Path(env).exists():
         return Path(env)
     candidates = [
+        SERVER_DIR / "tools" / "ansa_api_index.json",        # shipped with the repo
+        SERVER_DIR.parent / "tools" / "ansa_api_index.json",
         Path.home() / "AppData/Roaming/Python/Python311/site-packages/tools/ansa_api_index.json",
         Path.home() / "AppData/Roaming/Python/Python310/site-packages/tools/ansa_api_index.json",
         Path.home() / "AppData/Roaming/Python/Python39/site-packages/tools/ansa_api_index.json",

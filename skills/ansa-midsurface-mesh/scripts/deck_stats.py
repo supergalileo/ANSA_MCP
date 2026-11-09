@@ -19,7 +19,7 @@ node ids, plus rounded coordinates so coincident-but-separately-numbered nodes
 still count as joined) and reports **area and bbox per block**. That is the
 answer to "is this part fragmented, or is its middle surface genuinely made of
 inner wall / outer wall / bulkhead?" - a 9-block crash box whose blocks are each
-0.5-3 m2 with adjacent bboxes is a normal BIW part; 9 blocks of 40 mm2 each is
+0.5-3 m2 with adjacent bboxes is a normal automotive body part; 9 blocks of 40 mm2 each is
 debris.
 """
 

@@ -6,7 +6,7 @@
 `casting_midsurf.py` walks a whole folder inside a single ANSA session, which is
 fine for a handful of small brackets and wrong for a rescue set. Some parts do
 not fail - they **hang**, with no exception and no progress (O067/O090 泡沫塑料盖,
-O139/O144/O145 NVH 贴条 on the 553-part BIW body). In one process the first hang
+O139/O144/O145 NVH 贴条 on a 553-part body-in-white model). In one process the first hang
 takes the rest of the queue with it, and the rescue set is exactly where those
 parts end up.
 
