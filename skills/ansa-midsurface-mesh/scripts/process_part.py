@@ -1,7 +1,7 @@
 """One part, start to finish: classify -> repair -> Skin -> name -> mesh -> save.
 
     PARAMS = {
-        "catpart":  r"D:/proj/B0029_A0072600089.CATPart",
+        "catpart":  r"D:/proj/B####_A##########.CATPart",
         "engine":   "mesh",              # "mesh" | "batchmesh" | "none"
         "mpar":     r"D:/proj/5MM.ansa_mpar",
         "qual":     r"D:/proj/5MM.ansa_qual",
@@ -11,15 +11,15 @@
         "hardware_area": 4000.0,         # below this, a shellable-looking part is a bolt
         "name_rules": True,              # read the CATIA Nomenclature before measuring
         "standard_code_pattern": r"S\\d{6}$",   # part-number block that means "standard part"
-        "save":     r"D:/out/A0072600089.ansa",
+        "save":     r"D:/out/A##########.ansa",
     }
     exec(open(r"<skill>/scripts/process_part.py", encoding="utf-8").read(), globals())
     RESULT
 
 Naming
 ------
-The part code is taken from the file name: `B0029_A0072600089.CATPart` ->
-`A0072600089` (drop everything before the first underscore). The original solid
+The part code is taken from the file name: `B####_A##########.CATPart` ->
+`A##########` (drop everything before the first underscore). The original solid
 geometry keeps the code plus `_origin`; the middle-surface property becomes
 `<code>_T<gauge>` where the gauge is the measured wall in 0.01 mm, rounded half
 up: 1.702 -> 170, 1.709 -> 171, 1.720 -> 172, 2.657 -> 266.
@@ -75,13 +75,13 @@ CODE_RE = re.compile(r"([A-Za-z]\d{7,10})")
 
 
 def part_code(path, override=None):
-    """B0029_A0072600089.CATPart -> A0072600089
+    """B####_A##########.CATPart -> A##########
 
     The code is the **second underscore token**, not everything after the first
     underscore and not a fixed digit pattern:
-        B0029_A0072600089        -> A0072600089
-        R007_A0072600643_WELD    -> A0072600643   (drop the suffix)
-        O004_A007S010414         -> A007S010414   (letters inside the number)
+        B####_A##########        -> A##########
+        R###_A##########_WELD    -> A##########   (drop the suffix)
+        O###_A##########         -> A007S######   (letters inside the number)
     A purely numeric regex misses the `A007S...` family; splitting once keeps the
     `_WELD` suffix. Falls back to the whole stem when there is no underscore.
     """
@@ -231,7 +231,7 @@ def name_kind(name):
 def standard_part(code, name, params):
     """(kind, why) when this part is a standard part, else (None, None).
 
-    Standard parts are named, not measured. `A007S030430` sorts into the S
+    Standard parts are named, not measured. `A007S######` sorts into the S
     block of the part-number range, and the name says 六角法兰焊接螺母. On 553
     real parts both signals agreed with the area rule on every one of the 118
     S-code parts, and the name catches what area alone misses: a 11 636 mm2

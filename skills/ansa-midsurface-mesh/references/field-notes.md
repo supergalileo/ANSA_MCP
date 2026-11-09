@@ -100,7 +100,7 @@ Two classes showed up on 540 parts, both non-structural trim:
 
 | part | behaviour | handling |
 |---|---|---|
-| `B0595_A0072600531` | crashes ANSA when processed **after other parts**, fine alone (99 509 shells, T=1.062) | run in its own process |
+| `B####_A##########` | crashes ANSA when processed **after other parts**, fine alone (99 509 shells, T=1.062) | run in its own process |
 | `O067`/`O090` 泡沫塑料盖, `O139`/`O144`/`O145` NVH 贴条 | Casting or meshing hangs indefinitely, no crash | mass-equivalent these; they are G11 non-structural anyway |
 
 The first one is the useful lesson: "this part crashes ANSA" can mean "this part
@@ -173,7 +173,7 @@ from.
    estimate: "no consistent offset pair", not "thick". `T <= 0` means the estimate
    is unknown - try Skin anyway.
 4. **Output names must not depend on processing order.** One part number can sit at
-   several assembly positions (four `B0343..B0349_A0072600170`). Computing the
+   several assembly positions (four different position IDs on one part number). Computing the
    stem map from a size-sorted list makes two runs disagree and one part overwrite
    another's `.ansa`. Compute it once from the **name-sorted** full list and hand
    the same map to every worker.
@@ -257,8 +257,8 @@ first rather than deleting it.
 **Islands are not fragmentation.** `deck_stats.py --blocks` on the 4 multi-block
 parts showed blocks of 60 000-341 000 mm2 (inner wall / outer wall / bulkheads) -
 normal automotive body geometry. The same scan found the real debris: a 2-element / 2 mm2
-island on two instances of `A0072600194` and two 16-element slivers on
-`A0072600969`. Small and floating, they are still not harmless - an island has no
+island on two instances of `A##########` and two 16-element slivers on
+`A##########`. Small and floating, they are still not harmless - an island has no
 connection and no boundary condition, so the stiffness matrix gets a singular
-block. Removing them took one ANSA pass each and dropped `A0072600969` from 9
+block. Removing them took one ANSA pass each and dropped `A##########` from 9
 components to 7.
