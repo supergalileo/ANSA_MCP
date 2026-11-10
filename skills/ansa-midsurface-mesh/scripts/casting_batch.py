@@ -93,7 +93,13 @@ def main():
     ap.add_argument("--mpar", default="")
     ap.add_argument("--qual", default="")
     ap.add_argument("--tol", type=float, default=2.0,
-                    help="thickness_tolerance; 1.0 silently drops walls")
+                    help="thickness_tolerance for the 'middle' path")
+    ap.add_argument("--casting", choices=["autosurf", "middle"], default="autosurf",
+                    help="autosurf = MidSurfAuto, one connected patch (~70 s/part); "
+                         "middle = MiddleGeometry + own mesher (~8 s/part, discrete faces)")
+    ap.add_argument("--autosurf-thick", type=float, default=0.0,
+                    help="minimum wall for MidSurfAuto; 0 = read from "
+                         "DetectSolidDescription (recommended)")
     ap.add_argument("--min-face-rate", type=float, default=90.0)
     ap.add_argument("--max-thickness", type=float, default=6.0)
     ap.add_argument("--timeout", type=int, default=300, help="seconds per part")
@@ -125,11 +131,14 @@ def main():
 
     base_params = {"out_dir": args.out.replace("\\", "/"),
                    "engine": "mesh", "mpar": args.mpar, "qual": args.qual,
+                   "casting": args.casting,
                    "thickness_tolerance": args.tol,
                    "min_face_rate": args.min_face_rate,
                    "max_thickness": args.max_thickness,
                    "tolerance": 0.15, "change_option": "macro perimeters",
                    "nas": bool(args.nas), "resume": False}
+    if args.autosurf_thick:
+        base_params["autosurf_thick"] = args.autosurf_thick
 
     added = []
     for i, cat in enumerate(todo, 1):
