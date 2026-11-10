@@ -3,7 +3,7 @@
 > 调研日期：2026-11-10
 > 目的：为 402 件独立网格补上焊点/胶接连接，使整车模型可求解
 > 数据来源：`ansa_v24.1.2/docs/extending/python_api/html/reference/api_ref_ansa/generated/ansa.connections.html`（403 KB）
-> 与本文配套：`交接_连接能力_2026-11-09.md`（数据勘察结论）
+> 与本文配套：另有一份内部数据勘察交接文档，含项目原始数据，不随本包发布。
 
 ---
 

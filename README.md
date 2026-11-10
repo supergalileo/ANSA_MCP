@@ -14,7 +14,7 @@
 
 **版本**：2026-11-10 包。实测环境 ANSA 24.1.2；API 索引与文档均取自 24.1.2 安装目录。
 本版新增 `organize_output.py`（输出目录按阶段分类）、Casting 第二遍默认改用
-`MidSurfAuto`（单块连续网格），并附带 `docs/连接能力_API调研_2026-11-10.md`。
+`MidSurfAuto`（单块连续网格），并附带 `docs/connectivity_api_survey_2026-11-10.md`。
 
 ---
 

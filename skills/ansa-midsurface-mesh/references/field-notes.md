@@ -13,9 +13,9 @@ Found on the delivered 540-part folder: 7 of 24 Casting results were fragmented
 
 | part | tol 1.0 | tol 2.0 |
 |---|---|---|
-| O044 crash box | **16.6%** of faces, 2 075 shells, 12 patches | 99.9%, 8 218 shells, 9 patches |
-| B0736 sill insert | 100%, 28 068, 6 | 97.7%, 28 822, 5 |
-| O025 crash box | 7 patches | **13.2%** - still not enough, needs 5.0+ |
+| O### crash box | **16.6%** of faces, 2 075 shells, 12 patches | 99.9%, 8 218 shells, 9 patches |
+| B#### sill insert | 100%, 28 068, 6 | 97.7%, 28 822, 5 |
+| O### crash box | 7 patches | **13.2%** - still not enough, needs 5.0+ |
 
 The part still came out `rescued` because nothing gated on the rate. Fixed:
 default is now 2.0 and anything under `min_face_rate` (90%) ends as
@@ -101,7 +101,7 @@ Two classes showed up on 540 parts, both non-structural trim:
 | part | behaviour | handling |
 |---|---|---|
 | `B####_A##########` | crashes ANSA when processed **after other parts**, fine alone (99 509 shells, T=1.062) | run in its own process |
-| `O067`/`O090` 泡沫塑料盖, `O139`/`O144`/`O145` NVH 贴条 | Casting or meshing hangs indefinitely, no crash | mass-equivalent these; they are G11 non-structural anyway |
+| `O###`/`O###` 泡沫塑料盖, `O###`/`O###`/`O###` NVH 贴条 | Casting or meshing hangs indefinitely, no crash | mass-equivalent these; they are G11 non-structural anyway |
 
 The first one is the useful lesson: "this part crashes ANSA" can mean "this part
 crashes ANSA **in this context**". Retry it alone before writing it off.
@@ -112,17 +112,17 @@ Seven parts a 553-part body-in-white folder had rejected via `Skin`, run through
 `scripts/casting_midsurf.py` with `engine="mesh"` and the project's 5 mm
 `.ansa_mpar` / `.ansa_qual`:
 
-| part | faces in | mid faces | face rate | shells | gauge mm | time |
-|---|---|---|---|---|---|---|
-| B0360 托架 | 322 | 125 | 100% | 1 486 | 1.52 | 7.1 s |
-| B0367 横梁 | - | 20 | 100% | 21 298 | 1.52 | 20.0 s |
-| B0504 | - | 34 | 100% | 765 | 2.91 | 4.9 s |
-| B0571 端部托架 | - | 33 | 100% | 779 | 2.91 | 4.7 s |
-| B0870 加强托架 | 354 | 141 | 100% | 3 002 | 1.02 | 7.7 s |
-| B1028 托架 | 102 | 10 | 100% | 96 | 3.42 | 2.9 s |
-| O081 后安装托架 | 145 | 21 | 100% | 1 256 | 1.37 | 2.8 s |
+| # | part | faces in | mid faces | face rate | shells | gauge mm | time |
+|---|---|---|---|---|---|---|---|
+| 1 | B#### 托架 | 322 | 125 | 100% | 1 486 | 1.52 | 7.1 s |
+| 2 | B#### 横梁 | - | 20 | 100% | 21 298 | 1.52 | 20.0 s |
+| 3 | B#### | - | 34 | 100% | 765 | 2.91 | 4.9 s |
+| 4 | B#### 端部托架 | - | 33 | 100% | 779 | 2.91 | 4.7 s |
+| 5 | B#### 加强托架 | 354 | 141 | 100% | 3 002 | 1.02 | 7.7 s |
+| 6 | B#### 托架 | 102 | 10 | 100% | 96 | 3.42 | 2.9 s |
+| 7 | O### 后安装托架 | 145 | 21 | 100% | 1 256 | 1.37 | 2.8 s |
 
-50 s for the seven, 6 `rescued` + 1 `rescued_var` (B0367, p2-p98 spread 34% - the
+50 s for the seven, 6 `rescued` + 1 `rescued_var` (#2, p2-p98 spread 34% - the
 rear rail genuinely varies, the median is written and the property renamed
 `*_suspect`).
 
@@ -132,7 +132,7 @@ For comparison, `MidSurfAuto` on four of the same parts: 33 s, 324 s, 14 s, 14 s
 ## Why MidSurfAuto cannot be the second pass here
 
 `base.MidSurfAuto` creates a part called `Middle Skin Shells` holding 1306 SHELL
-and **0 FACE** (B0360, verified by reopening the saved `.ansa`). It is a mesher.
+and **0 FACE** (B####, verified by reopening the saved `.ansa`). It is a mesher.
 Its elements cannot be re-meshed by another engine, cannot be handed to a Batch
 Mesh session, and carry a mesh from a third algorithm that no `.ansa_mpar`
 controls.
@@ -144,7 +144,7 @@ the surface, `mesh.Mesh` or Batch Mesh builds the elements.
 
 ## Engine comparison - and why most comparisons are wrong
 
-In one session on one `Skin` result (B0027): `mesh.Mesh` gave 204 elements /
+In one session on one `Skin` result (B####): `mesh.Mesh` gave 204 elements /
 worst aspect 2.864; a second `mesh.Mesh` after deleting the mesh gave 218 / 2.345;
 a Batch Mesh run straight after gave 208 / 2.861.
 
@@ -159,7 +159,7 @@ from.
 1. **`Skin` has three buckets.** The return dict carries `skinned`, `check` and
    `failed`. A `check` group already has its middle surface - ANSA only wants it
    reviewed. Counting `skinned` alone writes off good parts: 4 of 9 parts reported
-   as `skin_failed` held 58-5 000 `check` faces and meshed fine (`B0318` ->
+   as `skin_failed` held 58-5 000 `check` faces and meshed fine (`B####` ->
    10 712 elements).
    ```python
    n = sum(len(g.get("skin") or []) for k in ("skinned", "check")

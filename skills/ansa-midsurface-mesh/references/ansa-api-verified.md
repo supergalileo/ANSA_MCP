@@ -415,7 +415,7 @@ base.CheckAndFixGeometry(input=part,
 ```
 
 - Run it **before** Skin and do not follow it with `base.RebuildTopology` - that
-  reverted B0025 to 0. `RebuildTopology` alone also failed where
+  reverted B#### to 0. `RebuildTopology` alone also failed where
   `CheckAndFixGeometry` succeeded.
 - It returns `None` when nothing is reported; the topology is still normalised.
 - `Skin(apply_thickness=True, new_pid=True, new_part=True)` puts the middle
@@ -425,7 +425,7 @@ base.CheckAndFixGeometry(input=part,
 
 ### Run order, not engine, drives the numbers
 
-One part (B0027), one Skin result, one session, same parameter files - only the
+One part (B####), one Skin result, one session, same parameter files - only the
 order of the meshing calls changed:
 
 | step | elements | aspect max |
@@ -529,7 +529,7 @@ for _ in range(3):
 ```
 
 - `try_fix()` returns `None` on success as well as on no-op. The observable
-  signal is the FACE count (`O137`: 158 -> 157 on the first round) or a re-run of
+  signal is the FACE count (`O###`: 158 -> 157 on the first round) or a re-run of
   `execute()` that still returns reports.
 - Effect on 101 parts that Skin had already refused: 2 recovered
   (`B####_A##########` -> 5 338 elements, `B####_A##########` -> 4 391), 99 still

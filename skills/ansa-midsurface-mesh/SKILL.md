@@ -272,7 +272,7 @@ shows grey geometry over the mesh and roughly doubles in size.
 **Run the second pass one part per process** when the set is a rescue list, not a
 handful of brackets: `scripts/casting_batch.py` launches one `ansa64.bat` per part
 with a hard timeout. The parts that reach this pass are exactly the ones that
-**hang** rather than fail (`O067`/`O090` foam covers, `O139`/`O144`/`O145` NVH
+**hang** rather than fail (`O###`/`O###` foam covers, `O###`/`O###`/`O###` NVH
 strips), and in a single session the first hang eats the rest of the queue.
 
     python scripts/casting_batch.py --src <hard_parts> --out <out>/casting \
@@ -369,7 +369,7 @@ clipping (four parts really were 3.000 mm at both a 3.0 and a 6.0 cap).
 
 **Repair before giving up.** `base.checks.general.Geometry()` then `try_fix()` in a
 loop, watching the FACE count (`try_fix` returns nothing). Do **not** follow it with
-`RebuildTopology` - on B0025 that dropped Skin straight back to 0, and it also
+`RebuildTopology` - on B#### that dropped Skin straight back to 0, and it also
 failed where the check fixed it. `base.CheckAndFixGeometry` is deprecated in v24 and
 silently skips two of the GUI's default checks.
 
