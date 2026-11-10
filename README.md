@@ -10,7 +10,11 @@
 > and shell meshing. The server adds idempotent write operations (`operation_id`),
 > an explicit `OUTCOME_UNKNOWN` state for lost responses, and layered evidence so a
 > caller can tell "the API returned" apart from "the model actually changed".
-> ANSA 23.0.0, Windows, MIT.
+> ANSA 24.1.2 (23.0.0+), Windows, MIT.
+
+**版本**：2026-11-10 包。实测环境 ANSA 24.1.2；API 索引与文档均取自 24.1.2 安装目录。
+本版新增 `organize_output.py`（输出目录按阶段分类）、Casting 第二遍默认改用
+`MidSurfAuto`（单块连续网格），并附带 `docs/连接能力_API调研_2026-11-10.md`。
 
 ---
 
@@ -227,12 +231,12 @@ evidence: transport=ok · script=returned · model=GRID +1 · engineering=unveri
 ```python
 # 单件：判定 → 修复 → Skin 抽中面 → property 命名 → 划网格 → 存 .ansa + .nas
 PARAMS = {
-    "catpart": r"D:/proj/B0029_A0072600089.CATPart",
+    "catpart": r"D:/proj/B####_A##########.CATPart",
     "engine": "mesh",                       # "mesh" | "batchmesh"
     "mpar": r"D:/proj/5MM.ansa_mpar",
     "qual": r"D:/proj/5MM.ansa_qual",
-    "save": r"D:/out/A0072600089.ansa",
-    "nas": r"D:/out/A0072600089.nas",
+    "save": r"D:/out/A##########.ansa",
+    "nas": r"D:/out/A##########.nas",
 }
 exec(open(r"<skill>/scripts/process_part.py", encoding="utf-8").read(), globals())
 RESULT
@@ -243,7 +247,7 @@ RESULT
 1. `base.DetectSolidDescription(estimate_thickness=True)` 一次调用同时给出**钣金判定**和壁厚估计；
    面积占比 <50% 或主导厚度 >4 mm 判为非钣金，直接跳过（返回 `-1.0` 表示估计失败，此时仍尝试抽中面）。
 2. `base.Skin` 抽中面；抽不出时依次做 `CheckAndFixGeometry` → `RebuildTopology` 两级修复再试。
-3. property 按编号重命名：原始几何 `A0072600089_origin`，中面 `A0072600089_T171`（厚度 ×100 四舍五入）。
+3. property 按编号重命名：原始几何 `A##########_origin`，中面 `A##########_T171`（厚度 ×100 四舍五入）。
 4. `mesh.Mesh` 或 Batch Mesh 划网格，由 `.ansa_mpar` + `.ansa_qual` 驱动。
 5. 存 `.ansa`（原始几何 + 中面 + 网格）并导出 `.nas`（材料卡 `DEFINED=YES`，否则 MAT1 会被静默丢掉）。
 
@@ -280,8 +284,16 @@ RESULT["summary"]["issues"]      # 必须汇报，不能只报成功数
 
 `process_part.py` 是单件完整流水线（钣金判定 → 几何修复 → `Skin` 抽中面 → property 命名 → 划网格 → 保存）；
 `mesh_engine.py` 只负责划网格，用 `PARAMS["engine"]` 切换。两条都吃 `.ansa_mpar` + `.ansa_qual`，
-都**不负责抽中面**。没有 `.ansa_mpar` / `.ansa_qual` 时用 `rescue_midsurf.py`（`MidSurfAuto` 自带网格器），
-但那条路的网格不受项目判据文件控制，只在不要求网格规格时使用。
+都**不负责抽中面**。
+
+二遍救援有两条路（`casting_midsurf.py`）：
+- **`autosurf`（默认）** `base.MidSurfAuto` —— 抽面 + 划网格 + 缝合一次完成，
+  得到**单块连续网格**。代价是网格器不受 `.ansa_mpar` / `.ansa_qual` 控制，70 s/件。
+- **`middle`** `MiddleGeometry` + 你自己的引擎 —— 受判据文件控制，但中面是离散面片，
+  周界配对率低时网格会断成多块，8 s/件。
+
+单块连续性优先选 `autosurf`；判据可追溯性优先选 `middle`。取舍详见
+`skills/ansa-midsurface-mesh/SKILL.md` 的 0e 节。
 
 | engine | 对应 GUI | 特点 |
 |---|---|---|

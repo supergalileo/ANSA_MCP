@@ -125,12 +125,13 @@ python tools\switch_ansa.py 24.1.2     # 切到该版本，改的是 mcp.json �
     ├── process_part.py        单件全流程
     ├── process_folder.py      目录批量
     ├── parallel_batch.py      多进程批量（几百件以上）
-    ├── casting_midsurf.py     Casting 二遍救援
+    ├── casting_midsurf.py     二遍救援（autosurf 默认 / middle 可选）
     ├── casting_batch.py       同上，一件一进程
     ├── make_summary.py        出交付表
     ├── deck_stats.py          网格统计
     ├── mesh_engine.py         两条网格路线
-    ├── rescue_midsurf.py      MidSurfAuto 兜底
+    ├── organize_output.py     按处理阶段整理输出目录
+    ├── rescue_midsurf.py      旧版 MidSurfAuto 薄封装（已被 casting_midsurf 取代）
     └── inspect_model.py       只读勘察
 ```
 
@@ -147,13 +148,13 @@ Skill 的 `description` 会自动触发——你说「抽中面并划 5mm 网格
 
 ```python
 PARAMS = {
-    "catpart": r"D:/proj/B0029_A0072600089.CATPart",
+    "catpart": r"D:/proj/B####_A##########.CATPart",
     "engine": "mesh",
     "mpar": r"D:/proj/5MM.ansa_mpar",
     "qual": r"D:/proj/5MM.ansa_qual",
     "max_thickness": 6.0,
-    "save": r"D:/out/A0072600089.ansa",
-    "nas":  r"D:/out/A0072600089.nas",
+    "save": r"D:/out/A##########.ansa",
+    "nas":  r"D:/out/A##########.nas",
 }
 exec(open(r"D:/skills/ansa-midsurface-mesh/scripts/process_part.py", encoding="utf-8").read(), globals())
 RESULT
@@ -206,10 +207,26 @@ python <skill>\scripts\make_summary.py --out D:/out --target 5.0 --connectivity 
 
 ```bash
 python <skill>\scripts\casting_batch.py --src D:/hard --out D:/out/casting \
-    --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --tol 2.0 --timeout 240
+    --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --timeout 300
 
-python <skill>\scripts\deck_stats.py D:/out/A0072600089.nas --blocks
+python <skill>\scripts\deck_stats.py D:/out/A##########.nas --blocks
 ```
+
+默认走 `autosurf`（`MidSurfAuto`），一件约 70 s，出**单块连续网格**。
+要旧的 `MiddleGeometry` 路径（受判据文件控制、但中面离散）加 `--casting middle`。
+
+### 4.5 整理输出目录
+
+跑完几百件后，输出目录会平铺着上千个文件。整理成按阶段分类的结构：
+
+```bash
+python <skill>\scripts\organize_output.py --out D:/out           # 先看计划
+python <skill>\scripts\organize_output.py --out D:/out --apply   # 真移动
+```
+
+产出 6 个分类目录（紧固件 / Skin成功 / Skin失败 / Casting成功 / 最终失败 / 玻璃），
+每个目录一份 `_清单.csv`，根目录一份 `README.md` 说明各目录装什么、怎么查某一件。
+脚本幂等，可以反复跑。
 
 ---
 
