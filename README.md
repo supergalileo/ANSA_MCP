@@ -35,6 +35,8 @@
 | `skills/ansa-midsurface-mesh/scripts/make_summary.py` | 跑完出四张交付表 + 质检门 |
 | `skills/ansa-midsurface-mesh/scripts/deck_stats.py` | 直接从 `.nas` 算 quad 比、自由边、分块 |
 | `skills/ansa-midsurface-mesh/scripts/mesh_engine.py` | 两条网格路线（`mesh.Mesh` / Batch Mesh），由 `.ansa_mpar` + `.ansa_qual` 驱动 |
+| `skills/ansa-bolt-connection/` | 螺栓连接 Skill：从螺栓实体建 2 RBE2 + 1 CBAR（PBARL ROD） |
+| `skills/ansa-bolt-connection/scripts/bolt_connection.py` | 两阶段：提螺栓轴线 → 建连接（孔心对齐、整圈抓取、多层合并、单层单片） |
 
 ## 工作原理
 
@@ -218,6 +220,40 @@ evidence: transport=ok · script=returned · model=GRID +1 · engineering=unveri
 | 外部会话 | `shutdown` 只退出本服务启动的实例 |
 | 孤儿清理 | 按 ANSA **真实 PID** 并复核镜像名后才 taskkill |
 | 工作区约束 | 设了 `ANSA_MCP_WORKSPACE` 后越界写出直接拒绝 |
+
+## Skill：ansa-bolt-connection
+
+把「螺栓实体 + 独立网格的壳模型」变成可求解的螺栓连接：每个螺栓一根梁、每侧一片蜘蛛。
+
+- 拓扑：`RBE2_A(GN=孔心) + CBAR(PBARL ROD, DIM1=杆径) + RBE2_B(GN=孔心)`
+- 孔心取自 ANSA 孔识别，再吸附到螺栓轴线；不从孔边节点取
+- 从节点 = 孔半径 + 5 mm 内的整圈节点，靠**角度缺口 ≤45°**判完整性
+- 多层板合并到同一片 RBE2；单层板（焊接螺栓/盲孔）只建 1 片、不建梁
+
+安装：把 `skills/ansa-bolt-connection/` 复制到 `~/.workbuddy/skills/`。
+
+用法（在 `ansa_run_python` / `ansa_run_async` 里执行）：
+
+```python
+exec(open(r"<skill>/scripts/bolt_connection.py", encoding="utf-8").read(), globals())
+
+# 阶段 1：从螺栓 CATPart 提轴线（会替换模型）
+run({"stage": "extract", "bolts": [r"D:/bolts"], "work_dir": r"D:/work"})
+
+# 阶段 2：当前模型须已是结构网格
+RESULT = run({
+    "stage": "build", "work_dir": r"D:/work",
+    "single_side": ["A007S010401", "A007S010026"],
+    "grab_grow": 5.0, "on_axis_tol": 3.0,
+    "export_nas": r"D:/out/model.nas", "save_ansa": r"D:/out/model.ansa",
+})
+```
+
+验收：每侧 `gap_deg ≤ 45`、蜘蛛里自由节点 0、`.nas` 的 `PBARL` 第 41~48 列带直径。
+
+已知坑（`CreateEntity` 建不了 CBAR/PBARL/GRID、`PBARL` 的 `DIM1` 导入导出双向丢失、
+`.ansa` 在 batch 模式打不开）见 [SKILL.md](skills/ansa-bolt-connection/SKILL.md)
+和 [references/api-verified.md](skills/ansa-bolt-connection/references/api-verified.md)。
 
 ## Skill：ansa-midsurface-mesh
 
