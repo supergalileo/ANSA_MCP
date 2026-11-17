@@ -54,3 +54,9 @@ desktop.ini
 
 # Personal work notes
 .workbuddy/
+
+# filter-repo 替换规则（本地工具，不进仓库）
+_replace_rules.txt
+
+# 内部交接文档，不对外
+交接_连接能力_*.md
