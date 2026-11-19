@@ -1,4 +1,4 @@
-"""Batch-process a folder of CATParts and summarise what could not be shelled.
+"""Batch-process a folder of CAD files and summarise what could not be shelled.
 
     PARAMS = {
         "folder":   r"D:/proj/parts",
@@ -96,7 +96,13 @@ def load_pipeline(scripts_dir=None):
     return ns["run"], ns["part_code"]
 
 
-def collect(folder, pattern=".catpart", recursive=True):
+# base.Open dispatches on the extension; a split STEP folder is the normal
+# input for the assembly workflow, so the filter must not be CATPart-only.
+INPUT_EXT = (".catpart", ".stp", ".step", ".igs", ".iges",
+             ".x_t", ".x_b", ".jt", ".sldprt")
+
+
+def collect(folder, pattern=INPUT_EXT, recursive=True):
     hits = []
     if recursive:
         for root, _dirs, files in os.walk(folder):
@@ -219,10 +225,13 @@ def run(params):
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    all_files = collect(folder, str(params.get("pattern", ".catpart")).lower(),
-                        bool(params.get("recursive", True)))
+    pat = params.get("pattern")
+    pat = (tuple(x.strip().lower() for x in str(pat).split(","))
+           if pat else INPUT_EXT)
+    all_files = collect(folder, pat, bool(params.get("recursive", True)))
     if not all_files:
-        return {"ok": False, "error": "no CATPart under %s" % folder}
+        return {"ok": False, "error": "no CAD file under %s (looked for %s)"
+                % (folder, ", ".join(pat))}
     files = list(all_files)
 
     # A parallel run hands each worker an explicit list so the groups cannot

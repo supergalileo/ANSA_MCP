@@ -1,4 +1,4 @@
-"""Drive a CATPart folder through ANSA batch mode with N parallel workers.
+"""Drive a CAD folder (CATPart / STEP / IGES) through ANSA batch mode with N workers.
 
     python scripts/parallel_batch.py --src D:/proj/parts --out D:/proj/out \
         --mpar D:/proj/5MM.ansa_mpar --qual D:/proj/5MM.ansa_qual --workers 4
@@ -138,6 +138,12 @@ def finished_parts(progress_files):
     return seen
 
 
+# base.Open dispatches on the extension, so any CAD format the project
+# actually receives belongs here - a split STEP folder is the normal case.
+INPUT_EXT = (".catpart", ".stp", ".step", ".igs", ".iges",
+             ".x_t", ".x_b", ".jt", ".sldprt")
+
+
 def build_stems(files):
     """Authoritative output stem per input file, decided on the **whole** src list.
 
@@ -212,7 +218,7 @@ def write_runner(path, params, mpar, qual, engine, nas, scripts_dir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", required=True, help="folder of CATParts to process")
+    ap.add_argument("--src", required=True, help="folder of CATPart/STEP/IGES files to process")
     ap.add_argument("--out", required=True, help="shared output folder")
     ap.add_argument("--mpar", default="", help=".ansa_mpar mesh parameters")
     ap.add_argument("--qual", default="", help=".ansa_qual quality criteria")
@@ -246,7 +252,7 @@ def main():
     merged_progress = os.path.join(out, "_progress.jsonl")
 
     files = [os.path.join(src, f) for f in sorted(os.listdir(src))
-             if f.lower().endswith(".catpart")]
+             if f.lower().endswith(INPUT_EXT)]
     prior = finished_parts([merged_progress] +
                            [os.path.join(drv, f) for f in os.listdir(drv)
                             if f.startswith("w") and f.endswith(".jsonl")])
