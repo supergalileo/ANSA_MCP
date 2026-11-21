@@ -6,8 +6,8 @@
 附带一个可复用的 Agent Skill：**从薄壁 CAD 几何自动抽中面、按目标尺寸划壳网格、回写实测壁厚**。
 
 > **English summary.** An MCP server that drives a live BETA CAE ANSA session over the
-> official Inter ANSA Protocol, plus a reusable agent skill for mid-surface extraction
-> and shell meshing. The server adds idempotent write operations (`operation_id`),
+> official Inter ANSA Protocol, plus reusable agent skills for mid-surface meshing,
+> bolted joints and seam welds. The server adds idempotent write operations (`operation_id`),
 > an explicit `OUTCOME_UNKNOWN` state for lost responses, and layered evidence so a
 > caller can tell "the API returned" apart from "the model actually changed".
 > ANSA 24.1.2 (23.0.0+), Windows, MIT.
@@ -37,6 +37,14 @@
 | `skills/ansa-midsurface-mesh/scripts/mesh_engine.py` | 两条网格路线（`mesh.Mesh` / Batch Mesh），由 `.ansa_mpar` + `.ansa_qual` 驱动 |
 | `skills/ansa-bolt-connection/` | 螺栓连接 Skill：从螺栓实体建 2 RBE2 + 1 CBAR（PBARL ROD） |
 | `skills/ansa-bolt-connection/scripts/bolt_connection.py` | 两阶段：提螺栓轴线 → 建连接（孔心对齐、整圈抓取、多层合并、单层单片） |
+| `skills/ansa-seam-weld/` | 焊缝 Skill：焊缝管 → seam line → 连接管理器自动生成 SeamLine 连接 |
+| `skills/ansa-seam-weld/scripts/seam_extract.py` | 逐根提取焊道中心线（15 点采样，处理 76mm 弦高的弯曲焊缝） |
+| `skills/ansa-seam-weld/scripts/seam_build.py` | 装配 + 建线 + 阶梯挂件（distance × find_exactly）+ 一次性转 RBE2 |
+| `skills/ansa-seam-weld/scripts/seam_chunks.py` | 自动布点失败的焊缝切段兜底 |
+| `skills/ansa-seam-weld/scripts/seam_audit.py` | 离线几何核查：到最近节点距离、3mm 内不同零件数（不需要 ANSA） |
+| `skills/ansa-seam-weld/scripts/seam_final.py` | 清理空连接、验收计数、自由节点检查 |
+| `skills/ansa-seam-weld/scripts/rbe2_to_bar.py` | 后处理：把每个两节点 RBE2 换成 CBAR（PBARL ROD），并补回导出丢失的 DIM1 |
+| `skills/ansa-seam-weld/scripts/solid_rep.py` | 实体焊缝：`RBE3-HEXA-RBE3` 出 CHEXA 砖 + 两侧 RBE3，并补上导出缺失的 MAT1 |
 
 ## 工作原理
 
