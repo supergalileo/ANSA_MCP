@@ -3,7 +3,8 @@
 用 MCP 客户端（WorkBuddy / Claude Code / Cursor / Codex）直接驱动 **BETA CAE ANSA** 干活：
 查模型、划网格、抽中面、赋厚度、截图、导出求解器文件、执行任意 ANSA Python。
 
-附带一个可复用的 Agent Skill：**从薄壁 CAD 几何自动抽中面、按目标尺寸划壳网格、回写实测壁厚**。
+附带三个可复用的 Agent Skill：**抽中面划壳网格**、**螺栓连接**、**焊缝连接（刚接/弹性杆/实体/四边形四种表示）**，
+以及一组模型状态工具（**快照 / 差异 / 结构自检**），用来回答「这一步到底改了什么、模型还完整吗」。
 
 > **English summary.** An MCP server that drives a live BETA CAE ANSA session over the
 > official Inter ANSA Protocol, plus reusable agent skills for mid-surface meshing,
@@ -12,9 +13,9 @@
 > caller can tell "the API returned" apart from "the model actually changed".
 > ANSA 24.1.2 (23.0.0+), Windows, MIT.
 
-**版本**：2026-11-10 包。实测环境 ANSA 24.1.2；API 索引与文档均取自 24.1.2 安装目录。
-本版新增 `organize_output.py`（输出目录按阶段分类）、Casting 第二遍默认改用
-`MidSurfAuto`（单块连续网格），并附带 `docs/connectivity_api_survey_2026-11-10.md`。
+**版本**：2026-11-22。实测环境 ANSA 24.1.2；API 索引与文档均取自 24.1.2 安装目录。
+本版新增模型状态三工具（`ansa_snapshot` / `ansa_diff` / `ansa_verify`）与 `ansa-seam-weld` 技能，
+变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -22,7 +23,8 @@
 
 | 路径 | 内容 |
 |---|---|
-| `ansa_mcp_server.py` | FastMCP 服务，19 个工具 |
+| `ansa_mcp_server.py` | FastMCP 服务，22 个工具 |
+| `ansa_checks.py` | 快照/差异/自检三项检查的注入代码 |
 | `ansa_iap.py` | IAP 协议实现（重写了官方参考实现） |
 | `ansa_ledger.py` | 写操作幂等台账 |
 | `tests/` | 三层测试，见 [tests/README.md](tests/README.md) |

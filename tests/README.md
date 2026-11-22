@@ -6,6 +6,7 @@ run casually; the rest start ANSA and consume a licence.
 | File | Starts ANSA | Duration | What it covers |
 |---|---|---|---|
 | `test_ledger.py` | no | <1 s | idempotency ledger, OUTCOME_UNKNOWN classification, strict booleans, output formatting (35 checks) |
+| `test_checks.py` | no | <1 s | snapshot/diff/verify generated-script contract: parses, ends with an expression, 3D area formula, no stray `%` (25 checks) |
 | `test_mcp.py` | no | ~3 s | MCP stdio handshake, tool list, a read-only tool call |
 | `test_server.py` | yes, batch | ~20 s | real meshing session: operation-id replay, entity-count delta, overwrite guards (8 assertions) |
 | `test_gui_tools.py` | yes, gui | ~25 s | whole-window capture, gui state, module-menu switch, async job dispatch + live log |

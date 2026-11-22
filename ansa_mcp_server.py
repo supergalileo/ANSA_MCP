@@ -56,6 +56,7 @@ from ansa_ledger import (
     fingerprint,
     new_operation_id,
 )
+import ansa_checks as checks
 
 # --------------------------------------------------------------- constants ---
 SERVER_NAME = "ansa"
@@ -1341,6 +1342,86 @@ if __ANSA_MCP_DETAIL__:
 out
 """.replace("__ANSA_MCP_DETAIL__", "True" if detail else "False")
     return _fmt(SESSION.run(code, tool="ansa_model_info"))
+
+
+@mcp.tool()
+def ansa_snapshot(name: str = "baseline") -> str:
+    """Record the model state so a later operation can be compared against it.
+
+    Captures entity counts, the element -> property assignment for shells, solids
+    and bars, and the property table (thickness, material). The bulky maps stay
+    inside ANSA; only counts come back.
+
+    Take a snapshot *before* anything that might re-property or re-mesh, then
+    ``ansa_diff`` afterwards. This is the only way to see changes that leave the
+    element count untouched - a weld pattern re-assigning 1 971 plate shells to a
+    new property is invisible to a census.
+
+    Args:
+        name: label to store under. Re-using a name overwrites it.
+    """
+    res = SESSION.run(checks.snapshot_code(name), timeout=600.0,
+                      tool="ansa_snapshot", params={"name": name})
+    return _fmt(res)
+
+
+@mcp.tool()
+def ansa_diff(name: str = "baseline") -> str:
+    """Compare the live model against a snapshot taken with ``ansa_snapshot``.
+
+    Reports added / removed / re-propertied element counts per type, the count
+    delta, and which properties appeared or disappeared. Sample ids are included
+    so a suspicious change can be located without dumping the whole map.
+
+    Args:
+        name: snapshot label. Use ``ansa_snapshot`` first; an unknown name
+              returns the list of stored snapshots.
+    """
+    res = SESSION.run(checks.diff_code(name), timeout=900.0,
+                      tool="ansa_diff", params={"name": name})
+    return _fmt(res)
+
+
+@mcp.tool()
+def ansa_verify(checks_wanted: str = "counts,props,mats,rbe") -> str:
+    """Structural sanity check of the open model.
+
+    Runs a checklist and returns one verdict per item:
+
+    * ``counts``  - entity census (always runs, cheap)
+    * ``props``   - properties no element uses, and properties in use
+    * ``mats``    - property MID that has no MAT1 (a dangle the solver will reject)
+    * ``rbe``     - RBE2/RBE3 with fewer than two nodes (welds nothing)
+    * ``free``    - grids referenced by no element or rigid element
+    * ``quality`` - zero-area shells and aspect ratio over 10
+    * ``native``  - ANSA's own Checks Manager, ten of them in one pass:
+                    free nodes, connections, undefined materials/properties,
+                    duplicate elements, RBE3 definitions, mesh quality,
+                    non-manifold nodes, intersections, proximities. Each returns
+                    its status, issue count, the distinct messages with counts,
+                    the error codes, and up to 12 offending entity ids.
+
+    ``native`` is **advisory, not a gate**. It is ANSA's own definition of each
+    defect and it is strict - on the reference model it reports 283 warping shells
+    and 154 connection remarks that the model has lived with. Use it to find where
+    to look and what to quote, then apply the project's criteria; do not fail a
+    model because this group says ``error``. The ``free``/``mats``/``rbe`` checks
+    are different - those describe states that are wrong under any criteria.
+    Roughly 2.5 s for all ten on a 63 000-shell model.
+
+    ``free`` and ``quality`` walk every element's nodes; measured on a 63 000-shell
+    model they took 0.6 s and 1.5 s. ``native`` runs nine ANSA checks in 2.3 s.
+    ``counts``, ``props``, ``mats`` and ``rbe`` are near-instant.
+
+    Args:
+        checks_wanted: comma separated subset of the names above.
+    """
+    wanted = [c.strip() for c in str(checks_wanted).split(",") if c.strip()]
+    if not wanted:
+        wanted = ["counts"]
+    res = SESSION.run(checks.verify_code(wanted), timeout=3600.0,
+                      tool="ansa_verify", params={"checks": wanted})
+    return _fmt(res)
 
 
 @mcp.tool()

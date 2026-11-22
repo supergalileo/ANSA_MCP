@@ -1,15 +1,29 @@
-# 使用文档 · ANSA MCP + ansa-midsurface-mesh Skill
+# 使用文档 · ANSA MCP + Skills
 
-两步装好：**装 MCP 服务**（让 AI 能操作 ANSA）、**装 Skill**（让 AI 知道怎么抽中面划网格）。
-只用其中一个也能工作，两个都装才是一套完整流程。
+一套让 AI 直接操作 ANSA 的工具：**MCP 服务**负责能动手（22 个工具），**Skill** 负责知道怎么动（三个领域工作流）。
+两者可以分开用，一起装才是完整链路。
 
-- 适用：Windows + BETA CAE ANSA（实测 24.1.2，23.x 应可用，需自行复核）
+- 适用：Windows + BETA CAE ANSA（实测 24.1.2，23.x 需自行复核）
 - 许可：MIT
-- 内容：`ansa_mcp_server.py` + 19 个 MCP 工具 + 1 个 Agent Skill + 一批可独立运行的批处理脚本
+- 内容：`ansa_mcp_server.py` + 22 个 MCP 工具 + 3 个 Agent Skill + 一批可离线运行的脚本
 
 ---
 
-## 0. 先确认三件事
+## 0. 这套东西现在能做什么
+
+| 层 | 覆盖 | 不覆盖 |
+|---|---|---|
+| MCP 工具 | 启停/连接、跑任意 ANSA Python、开存导出、网格、实体查询、异步长任务、截图、**模型快照与差异**、**结构自检** | 不替你做工程判断 |
+| `ansa-midsurface-mesh` | 薄壁件抽中面 → 划壳网格 → 批处理 → 交付表 | 体网格 |
+| `ansa-bolt-connection` | 螺栓实体 → 2 RBE2 + 1 CBAR(PBARL ROD) | 焊接螺母等组合件 |
+| `ansa-seam-weld` | 焊道管 → seam line → **RBE2 / CBAR / 实体 CHEXA+RBE3 / 四边形共节点** 四种表示 | 点焊、胶接、包边（尚未做） |
+
+三个技能各自带 `SKILL.md`（触发词、流程、坑表）和 `scripts/`（可直接 `exec` 的脚本），
+细节看技能目录，本文只讲怎么装、怎么验、怎么排错。
+
+---
+
+## 1. 先确认三件事
 
 | 检查项 | 怎么查 | 期望 |
 |---|---|---|
@@ -17,13 +31,13 @@
 | Python | `python --version` | 3.10+（3.13 实测可用） |
 | MCP 客户端 | WorkBuddy / Claude Code / Cursor 任一 | 支持 stdio 型 MCP 服务 |
 
-下文用 `%ANSA_HOME%` 代指 ANSA 安装目录，`%REPO%` 代指本包解压目录，**替换成你自己的实际路径**。
+下文用 `%ANSA_HOME%` 代指 ANSA 安装目录，`%REPO%` 代指本包解压目录，**替换成自己的实际路径**。
 
 ---
 
-## 1. 装 MCP 服务
+## 2. 装 MCP 服务
 
-### 1.1 建虚拟环境并安装依赖
+### 2.1 建虚拟环境
 
 ```bash
 cd /d %REPO%
@@ -33,13 +47,12 @@ pip install -r requirements.txt
 ```
 
 `requirements.txt` 只有一条：`mcp>=1.2.0`。
+国内网络装不上时加镜像：`-i https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com`。
 
-> 国内网络装不上时加镜像：`pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com`
+### 2.2 写 MCP 配置
 
-### 1.2 写 MCP 配置
-
-WorkBuddy 的配置在 `%USERPROFILE%\.workbuddy\mcp.json`（Claude Code 是 `.mcp.json`，Cursor 是 `%USERPROFILE%\.cursor\mcp.json`）。
-把下面这段合并进 `mcpServers`，**不要覆盖已有的其他服务**：
+WorkBuddy 在 `%USERPROFILE%\.workbuddy\mcp.json`（Claude Code 是 `.mcp.json`，Cursor 是 `%USERPROFILE%\.cursor\mcp.json`）。
+合并进 `mcpServers`，**不要覆盖已有服务**：
 
 ```json
 {
@@ -47,246 +60,204 @@ WorkBuddy 的配置在 `%USERPROFILE%\.workbuddy\mcp.json`（Claude Code 是 `.m
     "ansa": {
       "command": "%REPO%\\.venv\\Scripts\\python.exe",
       "args": ["%REPO%\\ansa_mcp_server.py"],
-      "env": {
-        "ANSA_HOME": "%ANSA_HOME%"
-      }
+      "env": { "ANSA_HOME": "%ANSA_HOME%" }
     }
   }
 }
 ```
 
-注意：
+`command` 必须是**绝对路径**并双反斜杠转义。
 
-- `command` 必须写**绝对路径**，且用双反斜杠转义。
-- JSON 里不认 `%REPO%`，把占位符替换成真实路径后再保存。
-- `ANSA_HOME` **必填**。服务端代码里的默认值是别人的安装路径，不设会启动失败。
-- 路径含空格没问题（用 JSON 字符串包住即可），但**含中文的路径风险高**，ANSA 侧可能读不到，尽量放在纯 ASCII 目录下。
+### 2.3 验证
 
-### 1.3 验证
+让 agent 调 `ansa_status`：`connected: false` 是正常的（还没启动 ANSA）；
+能返回版本号就说明协议层通了。再调 `ansa_launch`，13–45 秒后 `connected: true`。
 
-重启 MCP 会话（大多数客户端需要重开窗口），然后在对话里问一句：
-
-```
-ansa_status
-```
-
-期望返回 `connected: false`、`ansa_home` 指向你的目录、版本号正确。
-`connected: false` 是**正常的**——服务还没启动 ANSA 实例，这不代表装坏了。
-
-再让它启动：
-
-```
-ansa_launch mode=gui
-ansa_status
-```
-
-这次应返回 `connected: true` 和 ANSA 版本号。
-
-### 1.4 环境变量（可选）
-
-| 变量 | 默认 | 用途 |
-|---|---|---|
-| `ANSA_HOME` | 代码内兜底路径 | ANSA 安装目录，**务必显式设置** |
-| `ANSA_BAT` | 自动探测 | 直接指定 `ansa64.bat`，多版本并存时用 |
-| `ANSA_MCP_TIMEOUT` | `600` | 单次脚本执行超时（秒） |
-| `ANSA_MCP_RESULT_LIMIT` | `120000` | 返回结果最大字符数 |
-| `ANSA_MCP_WORKSPACE` | 未设置 | 设了以后所有写出路径必须落在此目录内，防误写 |
-| `ANSA_API_INDEX` | 自动查找 | ANSA API 索引 JSON 路径 |
-
-### 1.5 多版本切换（可选）
+### 2.4 多版本切换
 
 ```bash
-python tools\switch_ansa.py            # 列出本机所有 ANSA 安装
-python tools\switch_ansa.py 24.1.2     # 切到该版本，改的是 mcp.json 的 ANSA_HOME
+python tools\switch_ansa.py 24.1.2     # 改 mcp.json 里的 ANSA_HOME
 ```
 
-改完**必须重开 MCP 会话**才生效。
+改完**必须重开 MCP 会话**。
 
 ---
 
-## 2. 装 Skill
+## 3. 装 Skill
 
-把 `skills\ansa-midsurface-mesh\` **整个目录**复制到 agent 的 skill 目录：
+把三个目录分别复制到 agent 的 skill 目录：
 
-| 客户端 | 目标路径 |
+| 技能 | 目标 |
 |---|---|
-| WorkBuddy / Claude Code | `%USERPROFILE%\.workbuddy\skills\ansa-midsurface-mesh\` |
-| Claude Code（原生） | `%USERPROFILE%\.claude\skills\ansa-midsurface-mesh\` |
+| `skills\ansa-midsurface-mesh\` | `%USERPROFILE%\.workbuddy\skills\ansa-midsurface-mesh\` |
+| `skills\ansa-bolt-connection\` | `...\skills\ansa-bolt-connection\` |
+| `skills\ansa-seam-weld\` | `...\skills\ansa-seam-weld\` |
 
-复制完目录结构应是：
+Claude Code 原生路径是 `%USERPROFILE%\.claude\skills\<name>\`。
+`SKILL.md` 的 `description` 会自动触发——说「抽中面划 5mm 网格」「建螺栓连接」「这几根焊缝连起来」时 agent 会加载对应技能。
 
-```
-.workbuddy\skills\ansa-midsurface-mesh\
-├── SKILL.md
-├── references\
-│   ├── ansa-api-verified.md
-│   └── field-notes.md
-└── scripts\
-    ├── process_part.py        单件全流程
-    ├── process_folder.py      目录批量
-    ├── parallel_batch.py      多进程批量（几百件以上）
-    ├── casting_midsurf.py     二遍救援（autosurf 默认 / middle 可选）
-    ├── casting_batch.py       同上，一件一进程
-    ├── make_summary.py        出交付表
-    ├── deck_stats.py          网格统计
-    ├── mesh_engine.py         两条网格路线
-    ├── organize_output.py     按处理阶段整理输出目录
-    ├── rescue_midsurf.py      旧版 MidSurfAuto 薄封装（已被 casting_midsurf 取代）
-    └── inspect_model.py       只读勘察
-```
-
-Skill 的 `description` 会自动触发——你说「抽中面并划 5mm 网格」时 agent 会自己加载它。
+装完**新开一次会话**才会出现在技能列表里。
 
 ---
 
-## 3. 最快跑通一件
+## 4. 动手之前：先学会验模型
 
-准备：一个闭合薄壁 CATPart、一份 `.ansa_mpar`（网格参数）、一份 `.ansa_qual`（质量标准）。
-包里没带这两个文件，它们是项目资产，问你的 CAE 同事要。
+这三个工具是新增的核心，原因是过去每次改动都靠临时写循环去数，**漏过事**：
+某个焊缝模式把 1 971 个板单元悄悄改挂到新属性上，单元总数一个没变，直到有人手写快照才发现。
 
-在对话里让 agent 执行（或直接在 ANSA 里跑）：
+| 工具 | 作用 | 实测 |
+|---|---|---|
+| `ansa_snapshot(name)` | 记下单元数、单元→属性、属性表 | 63 338 壳 + 2 252 RBE2，秒级 |
+| `ansa_diff(name)` | 与快照比对：增/删/**改属性** | 故意改 3 个壳的属性，精确报出 3、增删均 0 |
+| `ansa_verify(checks_wanted)` | 结构自检 | 见下 |
+
+`ansa_verify` 的可选检查：
+
+| 检查 | 内容 | 63 000 壳耗时 |
+|---|---|---|
+| `counts` | 实体普查（总是执行） | 瞬时 |
+| `props` | 没被任何单元使用的属性 | 瞬时 |
+| `mats` | 属性 MID 找不到 MAT1（求解器会拒） | 瞬时 |
+| `rbe` | RBE2/RBE3 节点数 < 2（焊不上） | 瞬时 |
+| `free` | 没被任何单元或刚体引用的节点 | **0.6 s**（65 446 节点，结果 0） |
+| `quality` | 零面积壳、长宽比 > 10 | **1.5 s**（零面积 0，长宽比超标 7） |
+| `native` | **ANSA 自带 Checks Manager 的 10 项（参考项）** | **2.4 s** |
+
+`native` 跑的是 ANSA 自己定义的检查，按类别分三组，一次返回状态、问题数、出现最多的消息与错误码、涉及的实体 id：
+
+- `general`：自由节点、**连接检查**、未定义材料/属性、重复单元、RBE3 定义
+- `mesh`：网格质量、非流形节点
+- `penetration`：干涉、**邻近度（零件间互相穿插）**
+
+> **这一组是参考，不是门槛。** ANSA 的判据偏严：参考模型被判 283 个翘曲单元超标、
+> 154 条连接问题，而模型一直正常在用。它的价值在于**指出该看哪里、以及拿什么去谈**，
+> 不在于判模型能不能用。真正必须在任何口径下都成立的，是 `free` / `mats` / `rbe` 这三项。
+
+连接检查逐条给原因和连接 id，比自己猜“为什么这条焊缝建不出”可靠：
+
+| 错误码 | 消息 | 条数 |
+|---|---|---|
+| E3881 | Bad total thickness of connecting parts | 84 |
+| E3877 | Bad maximum distance between outer parts 1 and 2 | 43 |
+| E3880 | Bad connecting flanges angle | 25 |
+| E3875 | Connection failed to project on part #1 / #2 | 2 |
+
+网格质量与邻近度的粒度也够用：一项报告里同时给“warping 283 个超标、jacobian 8 个、skewness 15 个”，
+邻近度直接指出“哪两个 PID 之间穿插”（E3966/E3967）。
+
+推荐用法：**改之前 `snapshot`，改之后 `diff` + `verify("counts,native")`**。三步都只读，不占额外 license。
+
+---
+
+## 5. 三个技能的最短路径
+
+### 5.1 抽中面 + 划网格
 
 ```python
 PARAMS = {
-    "catpart": r"D:/proj/B####_A##########.CATPart",
+    "catpart": r"D:/proj/part.CATPart",
     "engine": "mesh",
     "mpar": r"D:/proj/5MM.ansa_mpar",
     "qual": r"D:/proj/5MM.ansa_qual",
     "max_thickness": 6.0,
-    "save": r"D:/out/A##########.ansa",
-    "nas":  r"D:/out/A##########.nas",
+    "save": r"D:/out/part.ansa",
+    "nas":  r"D:/out/part.nas",
 }
-exec(open(r"D:/skills/ansa-midsurface-mesh/scripts/process_part.py", encoding="utf-8").read(), globals())
+exec(open(r"%USERPROFILE%/.workbuddy/skills/ansa-midsurface-mesh/scripts/process_part.py", encoding="utf-8").read(), globals())
 RESULT
 ```
 
-`RESULT` 里看三个数：`shells`（单元数）、`thickness`（实测壁厚）、`edge_p50`（实际边长中位数）。
-`edge_p50` 要对得上你要的目标尺寸，对不上说明 mpar 没生效。
+看三个数：`shells`、`thickness`、`edge_p50`。`edge_p50` 对不上目标尺寸说明 mpar 没生效。
 
----
+批量（几十件走单会话 `process_folder.py`，几百件走 `parallel_batch.py` 多进程），
+交付表用 `make_summary.py`，详见该技能 `SKILL.md`。
 
-## 4. 批量跑一整个目录
-
-### 4.1 几十件：单会话 `process_folder.py`
-
-`process_folder.py` 没有命令行入口，它是给 ANSA 内部 `exec` 用的。走 MCP 让 agent 执行：
+### 5.2 螺栓连接
 
 ```python
-PARAMS = {
-    "folder": r"D:/proj/parts", "out_dir": r"D:/out",
-    "engine": "mesh",
-    "mpar": r"D:/proj/5MM.ansa_mpar", "qual": r"D:/proj/5MM.ansa_qual",
-    "nas": True, "limit": 25, "resume": True,
-}
-exec(open(r"D:/skills/ansa-midsurface-mesh/scripts/process_folder.py", encoding="utf-8").read(), globals())
-RESULT["summary"]["issues"]      # 必须看，不能只看成功数
+PARAMS.update({"stage": "all", "work_dir": r"D:/out/bolt"})
+exec(open(r".../ansa-bolt-connection/scripts/bolt_connection.py", encoding="utf-8").read(), globals())
 ```
 
-中断了用同一份 `PARAMS` 再跑一次即可续跑（读 `_progress.jsonl`）。`limit` 是本次上限，0 = 不限。
+每个螺栓出 2 个 RBE2 + 1 根 CBAR。注意 `PBARL` 的 DIM1 在导入和导出时都会丢，脚本两处都补。
 
-### 4.2 几百件：多进程
+### 5.3 焊缝连接
 
-```bash
-python <skill>\scripts\parallel_batch.py --src D:/proj/parts --out D:/out \
-    --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --workers 6
+四种表示，按用途选：
+
+| 表示 | FE 类型 | 用途 | 参考模型建成率 |
+|---|---|---|---|
+| `RBE2` | 2 节点刚性链接 | 只求整体刚度/模态 | 133 / 133 |
+| `CBAR` | `PBARL ROD` 弹性杆 | 想要一点柔性 | 133 / 133（后处理） |
+| `RBE3-HEXA-RBE3` | CHEXA 实体砖 + 两侧 RBE3 | 要传力、要看焊缝附近应力 | 132 / 133 |
+| `OVERLAP-SHELL` | 共节点 CQUAD4 | 要像真焊缝的四边形连接 | 111 + 22（回退）= 133 |
+
+```python
+exec(open(r".../ansa-seam-weld/scripts/shell_rep.py", encoding="utf-8").read(), globals())
+PARAMS = {"width": 4.0, "root_shells": "Single Row", "restore_properties": True}
+run(PARAMS)
 ```
 
-- 找不到 `ansa64.bat` 时加 `--ana-bat "C:\...\ansa64.bat"`，或设 `ANSA_BAT` 环境变量。
-- 每个 worker 约占 0.4–0.9 GB 内存；16 核 / 64 GB 开 6 路稳定。**并发数受 license 槽位限制**，先问清有几个。
-- 这个驱动**故意不走 MCP**：ANSA 内核在某些几何上会直接崩，走 MCP 会把服务端一起带走，每次崩溃都要手动重连。
-
-### 4.3 跑完出交付表
-
-```bash
-python <skill>\scripts\make_summary.py --out D:/out --target 5.0 --connectivity --casting D:/out/casting
-```
-
-产出四张 CSV：`汇总.csv`、`交付清单.csv`、`未解决清单.csv`、`校验不通过.csv`。
-
-### 4.4 二遍救援 + 网格统计
-
-```bash
-python <skill>\scripts\casting_batch.py --src D:/hard --out D:/out/casting \
-    --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --timeout 300
-
-python <skill>\scripts\deck_stats.py D:/out/A##########.nas --blocks
-```
-
-默认走 `autosurf`（`MidSurfAuto`），一件约 70 s，出**单块连续网格**。
-要旧的 `MiddleGeometry` 路径（受判据文件控制、但中面离散）加 `--casting middle`。
-
-### 4.5 整理输出目录
-
-跑完几百件后，输出目录会平铺着上千个文件。整理成按阶段分类的结构：
-
-```bash
-python <skill>\scripts\organize_output.py --out D:/out           # 先看计划
-python <skill>\scripts\organize_output.py --out D:/out --apply   # 真移动
-```
-
-产出 6 个分类目录（紧固件 / Skin成功 / Skin失败 / Casting成功 / 最终失败 / 玻璃），
-每个目录一份 `_清单.csv`，根目录一份 `README.md` 说明各目录装什么、怎么查某一件。
-脚本幂等，可以反复跑。
+脚本会自动：设宽度 → 布焊点 → 转单元 → 统计重划/改属性 → 还原板属性 → 列出失败焊缝。
 
 ---
 
-## 5. 结果怎么算合格
+## 6. 什么算合格
 
-`make_summary.py` 会自动卡这几道门，全部通过才算交付：
-
-| 门槛 | 期望 |
+| 技能 | 门槛 |
 |---|---|
-| 壳单元数 | 非零，且接近 `面积 / 目标边长²` |
-| `edge_p50` | 与目标差 ~6% 内；差 20%+ 说明目标尺寸没生效 |
-| 每件 `T` | 等于实测值且唯一 |
-| `T = 1.0` 的 PSHELL | 必须为 0（说明壁厚没写进去） |
-| `.nas` 里的 `MAT1` | 必须存在（否则求解器拿到空材料） |
-| 两行共用同一输出路径 | 必须为 0（否则有文件被静默覆盖） |
-| 游离小块（≤20 单元或 <1% 面积） | 必须清掉（否则刚度矩阵奇异） |
+| 中面网格 | 单元数接近 `面积/边长²`；`edge_p50` 与目标差 ~6%；`T=1.0` 的 PSHELL 为 0；`MAT1` 存在；无游离小块 |
+| 螺栓 | 每螺栓 2 RBE2 + 1 CBAR；CBAR 两端节点有效；`PBARL` 的 `DIM1` 在 deck 里非空 |
+| 焊缝 | 连接数量对得上焊道数；每条连接至少两个零件；自由节点 0；RBE2 节点数 ≥ 2；导出的属性材料闭环 |
 
-**汇报时把三件事分开说**：网格存在、壁厚是实测的、模型工程有效——第三件没有自动步骤能断言。
+**汇报时把三件事分开说**：连接存在、单元真的生成了、接头工程有效——第三件没有任何自动步骤能断言。
 
 ---
 
-## 6. 常见问题
+## 7. 常见问题
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `ModuleNotFoundError: mcp` | 用了系统 Python 而不是 venv | 配置里的 `command` 指向 `.venv\Scripts\python.exe` |
-| `ansa_status` 报找不到 ANSA | `ANSA_HOME` 没设或指错 | 手工确认该目录下有 `ansa64.bat` |
-| 启动就崩，日志里有中文路径 | ANSA 读不了非 ASCII 路径 | 把模型和输出都放到纯英文目录 |
-| `-execscript "file.py\|main()"` 不执行 | `cmd.exe` 把 `\|` 吃掉了 | 改用 `-exec "load_script: 'file.py'"` |
-| Skin 全返回 0，件看着像实体 | 有壁厚超过 `max_thickness`，超了直接返回 0 | 把 `max_thickness` 提到 4.0–6.0，再走 Casting 二遍 |
-| 网格边长和目标差很多 | mpar 没生效 / 用了不该用的引擎 | 只允许 `mesh.Mesh` 和 Batch Mesh 出单元 |
-| 批量跑一半 worker 全死、无 traceback | 输出目录里旧文件被批量删除，撞上宿主的删除守护 | 换新目录跑，`os.replace` 回填 |
-| 交付表行数对，磁盘文件数不对 | 件号重名，输出互相覆盖 | 用本包的 `parallel_batch.py`，它按整个 `--src` 算名称表 |
-| 复开 `.ansa` 后 `CollectEntities(..., "SHELL")` 返回 0 | 复开后关联丢失 | 改从单元卡的 `PID` 反查 |
+| `ModuleNotFoundError: mcp` | 用了系统 Python | `command` 指向 `.venv\Scripts\python.exe` |
+| `ansa_status` 找不到 ANSA | `ANSA_HOME` 没设或指错 | 确认目录下有 `ansa64.bat` |
+| 启动就崩 / 中文路径 | ANSA 读不了非 ASCII 路径 | 模型和输出都放纯英文目录 |
+| `RealizeConnections` 报成功但没元素 | 它不校验 FE 名称，未知名字静默回落 RBE2 | 看元素计数，不看返回值 |
+| 焊缝实体模式返回 0 | 连接卡 `W`（宽度）默认 0 | 先设 `W = 焊道直径` |
+| 两次相同的运行结果不同 | `SetDefault` 是会话级，`session.New` 不清 | 显式设值，或用 `""` 清空 |
+| 扫多个模式数字越来越大 | `EraseConnectionFeRep` 不回滚重建的母材壳 | 一模式一会话 |
+| 焊缝属性把板单元改了 | 模式会把焊缝区板单元改挂到新属性 | `snapshot` 后 `restore_properties=True` |
+| 复开 `.ansa` 后 `CollectEntities(..., "SHELL")` 返回 0 | 复开后关联丢失 | 改从单元卡 `PID` 反查 |
+| 批量跑一半 worker 全死 | 输出目录旧文件被批量删除撞上删除守护 | 换新目录，`os.replace` 回填 |
 
-更多一手实测记录见 `skills\ansa-midsurface-mesh\references\field-notes.md`，
-验证过的 API 签名与走不通的路见 `references\ansa-api-verified.md`。
+更多一手记录见各技能 `references/`。
 
 ---
 
-## 7. 自检
+## 8. 自检
 
 ```bash
-.venv\Scripts\python.exe tests\test_ledger.py   # 离线，35 项，不占 license
-.venv\Scripts\python.exe tests\test_mcp.py      # MCP stdio 契约，不占 license
+.venv\Scripts\python.exe tests\test_ledger.py    # 离线 35 项
+.venv\Scripts\python.exe tests\test_checks.py    # 离线 25 项，快照/差异/自检的代码契约
+.venv\Scripts\python.exe tests\test_mcp.py       # MCP stdio 契约
 .venv\Scripts\python.exe tests\test_server.py batch   # 会启动 ANSA，占 license
 ```
 
-装完先跑前两条，能过就说明 Python 环境和 MCP 协议层没问题。
+前三条不占 license，装完先跑它们。
 
 ---
 
-## 8. 边界
+## 9. 边界
 
-本包**不做**这些事，别指望它：
+**不做**：四面体/体网格、已有壳网格重划、求解与结果评估。
 
-- 四面体/体网格
-- 已有壳网格的重新划分
-- 连接建模：各零件独立划网格，**节点不共享**，焊点 / tie / rigid 得另外定义
-- 一键求解或结果评估
+**连接只做了两类**：螺栓、缝焊。点焊（`SpotweldPoint_Type`）、胶接（`AdhesiveLine_Type`）、
+包边（`Hemming_Type`）尚未实现——它们的接口与缝焊同源，但没验证过，不要假设能用。
 
-`ansa_api_search` 依赖 `tools\ansa_api_index.json`，那是按 ANSA 23.1.1 文档生成的。
-你自己的 ANSA 版本不同就用 `python tools\build_api_index.py --ansa-home <你的安装目录>` 重建一份。
+**`ansa_api_search`** 依赖 `tools\ansa_api_index.json`，按 ANSA 23.1.1 文档生成；
+版本不同就用 `python tools\build_api_index.py --ansa-home <安装目录>` 重建。
+
+---
+
+## 10. 版本与变更
+
+变更记录见 `CHANGELOG.md`。当前版本以那里最新一条为准。

@@ -397,6 +397,23 @@ in the model. Say so rather than widening the radius again.
 
 All of these must hold, read from the model and the exported deck:
 
+Before the weld pass call `ansa_snapshot("pre_weld")`; afterwards `ansa_diff("pre_weld")`
+shows exactly what moved (elements added, and any plate shell re-assigned to a weld
+property), and `ansa_verify("counts,native")` answers the structural gates in one
+call in about two seconds. The table below is what those numbers must say.
+
+`native` also runs **ANSA's own connection check**, which is the fastest way to
+learn why a seam was refused or is suspect — it returns a message and an error code
+per connection instead of a bare count: `E3881` bad total thickness, `E3877` bad
+distance between the outer parts, `E3880` bad flange angle, `E3875` projection
+failed. On the reference model it flagged 154 issues across the 133 seams, none of
+which the hand-written structural checks could see.
+
+That group is **reference, not acceptance**: ANSA's thresholds are stricter than a
+typical project's, and a seam can be flagged (bad total thickness, bad flange angle)
+while still being the right engineering choice. Quote the codes when they explain a
+problem; do not reject a weld because the check says `error`.
+
 | gate | expectation |
 |---|---|
 | connections kept | every one names ≥ 2 parts (read from the XML, not the entity) |
