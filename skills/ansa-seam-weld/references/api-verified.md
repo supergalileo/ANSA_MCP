@@ -240,6 +240,117 @@ Querying the result: solids answer to `CollectEntities(deck, None, "SOLID")`
 (ANSA internal type 529); `CHEXA` / `CPENTA` as entity types return 0, so entity
 counts tell you nothing about the card type — grep the deck for that.
 
+## Shell / quad representations
+
+`config/<Profile>.defaults` lists the whole menu for `SeamLine_Type`; the entries
+that build shells rather than bars, bricks or spiders are:
+
+| pattern | intent | measured (W = 4, 5 mm mesh) |
+|---|---|---|
+| `OVERLAP-SHELL` | overlap joint, quads on existing nodes | **108 / 133**, +4 073 shells, 3 339 quads bridge two parts, 0 RBE2/RBE3 |
+| `OVERLAP-SHELL-CLOSED` | same, closed root | 95 / 133 |
+| `T-JOINT-SHELL` | T-joint | 133 / 133 but only ~500 shells |
+| `T-JOINT-SHELL-CLOSED` / `-DOUBLE-CLOSED` | T-joint, closed | 62 / 71 |
+| `EDGEWELD-SHELL` | edge weld | 133 / 133 but only **+90** shells |
+| `LASERWELD-SHELL` / `-CLOSED` | laser weld | 133 / 132, +90 each |
+| `CRIMPWELD-SHELL` | crimp weld | 132, +90 |
+| `Y-JOINT-SHELL` | Y-joint | 75, +1 960 |
+| `RBE3-SHELL-RBE3` | strip + spider each side | **133 / 133**, +2 090 quads, **all floating**, +3 107 RBE3 |
+| `SHELL_RBE3` | strip + one spider | 86, +1 109 |
+
+The "+90 shells" patterns only add a toe strip; they are not weld bridges. The
+node-shared ones are the `-SHELL` joint patterns, and each only builds where the
+joint really is that type — `OVERLAP-SHELL` reports 25 seams with no FE rather
+than silently producing something wrong.
+
+Quad size on the reference model: short edge p50 4.74 mm (tracks `W`), long edge
+p50 5.51 mm (tracks the plate mesh, `StepLength` has no effect on this pattern).
+
+### Side effects of a node-shared quad pass
+
+`OVERLAP-SHELL` re-meshes and re-properties, measured in-model with an
+element→property snapshot before and after:
+
+| effect | value |
+|---|---|
+| shells added | 4 079 |
+| shells removed by re-mesh | 6 |
+| plate shells re-assigned to the per-weld property | **1 971** |
+| properties | 22 → 28 |
+| thickness of the re-propertied shells | unchanged |
+| material id of the re-propertied shells | **changed** (e.g. PID 1/MID 2 → PID 52/MID 4) |
+
+### Row count and restoring the properties
+
+`SeamLine_OVERLAP-SHELL_RootShells` defaults to `"Double Row"`. Two rows meet at a
+ridge over the joint, which is easy to mistake for duplicate elements.
+
+| `RootShells` | realised | shells added | re-propertied | bridging quads |
+|---|---|---|---|---|
+| `"Double Row"` | 108 / 133 | 4 073 | 1 971 | 3 339 |
+| `"Single Row"` | 111 / 133 | 2 389 | 1 038 | 1 875 |
+
+```python
+connections.SetDefault(("SeamLine_OVERLAP-SHELL_RootShells", "Single Row"))   # rc=1
+```
+
+Restoring the plate properties — nothing in the API does it:
+
+```python
+before = snapshot(deck)                 # {eid: (pid, pid_entity)}
+# ... realise ...
+fixed = restore(before, deck)           # writes the old PID back, returns the count
+```
+
+Verified on the reference model: 1 038 shells re-assigned, 1 038 restored, 0 left
+changed; the exported deck then contains **zero** pre-existing elements with a
+different property. The weld quads keep their own properties — only the plate
+assignment is rolled back.
+
+### Why a joint pattern refuses a seam — and why tolerance cannot fix it
+
+On the reference model `OVERLAP-SHELL` refused 22 seams. Every one of them already
+named **two parts** (`P1`, `P2` populated, `Error Class = "No FE Rep."`), so the
+failure is geometric, not connective. Joint angle across those 22, measured from
+the mesh (Newell normals, two closest distinct parts):
+
+| class | seams |
+|---|---|
+| near-coplanar (0–2°) | 11 |
+| sandwich (175–180°) | 6 |
+| near-perpendicular (67–112°) | 5 |
+
+Tolerance sweeps, each on a clean load of the isolated 22-seam model:
+
+| lever | value | realised |
+|---|---|---|
+| — | default | 1 |
+| `SeamLine_OVERLAP-SHELL_SearchDist` | 5 / 10 / 20 mm | 0 / 0 / 0 |
+| `SeamLine_OVERLAP-SHELL_Parameters_Gap` | 0.5 / 1 / 2 / 3 / 5 mm | 0 / 0 / 0 |
+
+Widening the search is counter-productive: more candidate parts must satisfy a
+condition that the local geometry cannot meet.
+
+What does cover them is a pattern without a root-geometry requirement, run as a
+second pass on the leftovers:
+
+| representation | realised (of 22) | result |
+|---|---|---|
+| `RBE3-SHELL-RBE3` | **22 / 22** | +174 shells, spider-tied strip |
+| `RBE3-HEXA-RBE3` | 16 / 22 | 43 solid bricks |
+| `SHELL-RBE3` | 14 / 22 | +122 shells |
+
+Two-pass result on the full model: 111 node-shared quad welds + 22 spider-tied
+strips, **0 connections without FE**.
+
+### Sweeping patterns is a trap
+
+`EraseConnectionFeRep` removes the FE entities it owns but **not** the plate shells
+the pattern rebuilt, so running several patterns in one session accumulates and
+inflates every delta after the first. `LASERWELD-SHELL` measured "+818 shells" in a
+sweep and "+90" in a clean session; the only trustworthy number is one pattern per
+fresh session, measured inside that run.
+
 ## Verified conversion on the reference model
 
 | step | result |

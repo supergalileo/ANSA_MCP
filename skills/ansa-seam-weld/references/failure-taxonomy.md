@@ -159,6 +159,57 @@ The brick is still a **connector, not a weld bead**: it carries no throat or leg
 dimension, so it cannot size a weld — but its thickness is a free parameter, not
 a slave of the geometry.
 
+## Quad weld pass (OVERLAP-SHELL, W = 4 mm)
+
+| metric | value |
+|---|---|
+| connections | 133 |
+| realised as node-shared quads | **108** |
+| no FE at all | 25 (list by id) — the joint is not an overlap |
+| shells added / removed | 4 079 / 6 |
+| new quads bridging two different parts | 3 339 of 4 415 |
+| quad short edge (p50) | 4.74 mm |
+| quad long edge (p50) | 5.51 mm |
+| RBE2 / RBE3 | 0 / 0 |
+| plate shells re-propertied | **1 971** (thickness kept, material id changed) |
+
+Row count and property restore, same model:
+
+| `RootShells` | realised | shells added | re-propertied | restored | bridging quads |
+|---|---|---|---|---|---|
+| `"Double Row"` (default) | 108 | 4 073 | 1 971 | — | 3 339 |
+| `"Single Row"` | 111 | 2 389 | 1 038 | 1 038 (0 left) | 1 875 |
+
+With `restore_properties=True` the exported deck has **no pre-existing element with a
+changed property**; the weld quads keep their own PIDs. Without it, 1 038 plate
+shells stay reassigned even after `EraseConnectionFeRep`.
+
+The alternative `RBE3-SHELL-RBE3` realises all 133 but produces a **floating**
+strip: 2 090 quads, none sharing a node with the plates, tied by 3 107 RBE3. It is
+a valid weld representation, just not a node-shared one.
+
+Sweeping the other joint patterns in one session produced numbers that could not be
+reproduced in clean runs (+818 vs +90 for `LASERWELD-SHELL`) because the erase does
+not undo the re-mesh. Treat only single-pattern, single-session measurements as
+evidence.
+
+## Why 22 seams refuse a quad weld
+
+All 22 named two parts, so nothing was missing; the pattern declined the joint.
+Joint angle from the mesh: 11 near-coplanar, 6 sandwich, 5 near-perpendicular.
+
+Tolerance made it worse, not better:
+
+| lever | realised (of 22) |
+|---|---|
+| default | 1 |
+| `SearchDist` 5 / 10 / 20 | 0 / 0 / 0 |
+| `Parameters_Gap` 0.5–5 | 0 / 0 / 0 |
+
+A second pass with `RBE3-SHELL-RBE3` covers all 22, giving 111 + 22 = 133 of 133
+with no connection left without FE. `RBE3-HEXA-RBE3` reached 16/22, `SHELL-RBE3`
+14/22 — so the fallback choice matters and was measured, not assumed.
+
 ## Reusable lessons
 
 1. Classify by chord first. A zero-chord bead is a spot and no amount of seam

@@ -211,6 +211,102 @@ seams built as solids and the remaining 15 fell back to RBE2 in the same call
 (174 RBE2 in the deck). Report the split per seam, and never call the model
 "solid welds" without it.
 
+### 8. Optional: weld as quad shells — node-shared
+
+```python
+exec(open(r"<skill>/scripts/shell_rep.py", encoding="utf-8").read(), globals())
+```
+
+`OVERLAP-SHELL` builds the weld out of **CQUAD4 sitting on the existing plate
+nodes**, so the joint is bridged by a shared mesh instead of spiders. This is the
+representation to use when the weld has to look and behave like a welded joint in a
+crash or durability deck, without the extra DOF of RBE3 or the thickness parameter
+of a brick.
+
+Measured on the reference model (W = 4 mm, 5 mm plate mesh):
+
+| metric | value |
+|---|---|
+| realised | **108 / 133** |
+| new shells | 4 079 (6 removed by the local re-mesh) |
+| quads spanning two different parts | 3 339 of 4 415 new quads |
+| quad short edge | p50 4.74 mm (≈ W) |
+| quad long edge | p50 5.51 mm (follows the plate mesh, not `StepLength`) |
+| RBE2 / RBE3 created | **0 / 0** |
+
+**The pattern must match the joint, and tolerance is not the lever.** On the 22
+seams `OVERLAP-SHELL` refused, every one already named **two parts**, so the
+connection manager could see the partner plate — the pattern simply declined the
+joint. Measured joint geometry across those 22: 11 near-coplanar (0–2°), 6
+sandwich (175–180°), 5 near-perpendicular (67–112°).
+
+Widening the search does not help; it makes things worse, because more candidates
+have to satisfy a stricter condition:
+
+| setting | seams realised (of 22) |
+|---|---|
+| default | **1** |
+| `SearchDist` 5 / 10 / 20 mm | 0 / 0 / 0 |
+| `Parameters_Gap` 0.5 / 1 / 2 / 3 / 5 mm | 0 / 0 / 0 |
+
+So stop tuning tolerance the moment a pattern refuses — change the representation
+instead. `fallback_rep` (default `"RBE3-SHELL-RBE3"`) runs a second pass over
+whatever the first pass left without FE. That pattern has no root-geometry
+requirement and realises **22 of 22** here, giving full coverage:
+
+| pass | representation | connections |
+|---|---|---|
+| 1 | `OVERLAP-SHELL`, one row, node-shared | 111 |
+| 2 | `RBE3-SHELL-RBE3`, spider-tied strip | 22 |
+| left without FE | — | **0** |
+
+The two kinds are not equivalent — pass 1 shares nodes with the plates, pass 2 ties
+the strip with RBE3 — so report which connections came from which pass.
+
+The rest of the family (`T-JOINT-SHELL`, `EDGEWELD-SHELL`, `LASERWELD-SHELL`,
+`CRIMPWELD-SHELL`, `Y-JOINT-SHELL`) builds only a toe strip — about **90 shells
+for the whole model**, not a weld bridge. `RBE3-SHELL-RBE3` on its own does realise
+all 133 but its 2 090 quads are **floating**: not one shares a node with the
+plates, they are tied by 3 107 RBE3. Use it as the fallback, not as the default.
+
+Two side effects are counted by the script, never left to be discovered later:
+
+| side effect | reference model |
+|---|---|
+| local re-mesh around the seam | 4 079 shells added, 6 removed |
+| plate shells re-assigned to per-weld properties | **1 971** — thickness kept, material id changed |
+
+Report both. A weld pass that quietly re-properties 3 % of the plate is a modelling
+change, not a display detail.
+
+#### One row or two?
+
+`SeamLine_OVERLAP-SHELL_RootShells` ships as **`"Double Row"`**, which builds two
+quad rows meeting at a ridge — one row per plate, correct for a lap joint but easy
+to read as "duplicated connection elements". **This skill defaults to
+`"Single Row"`**: one web from the plate edge to the other plate, roughly half the
+elements. Pass `root_shells="Double Row"` to get the shipped behaviour back.
+
+| `RootShells` | realised | shells added | re-propertied | bridging quads |
+|---|---|---|---|---|
+| `"Single Row"` (skill default) | 111 | **2 389** | 1 038 | 1 875 |
+| `"Double Row"` (ANSA default) | 108 | 4 073 | 1 971 | 3 339 |
+
+Set it explicitly with
+`connections.SetDefault(("SeamLine_OVERLAP-SHELL_RootShells", "Single Row"))`, or
+leave `root_shells` alone and the script does it.
+
+#### Putting the properties back
+
+**Nothing restores them on its own.** `EraseConnectionFeRep` removes the FE entities
+the pattern owns and leaves the re-propertied plate shells carrying the weld
+property — so a pass that is later "undone" still leaves the model changed.
+
+`restore_properties=True` writes the original PID back on every shell the pattern
+reassigned, from the snapshot taken before realising. Verified: 1 038 changed,
+1 038 restored, 0 left changed, and the exported deck shows zero pre-existing
+elements with a different property.
+
 ## Parameters
 
 | key | default | meaning |
@@ -228,6 +324,10 @@ seams built as solids and the remaining 15 fell back to RBE2 in the same call
 | `height` | None | weld thickness in mm; None leaves the pattern following the plate gap |
 | `step_length` | None | weld position spacing in mm |
 | `num_layers` | None | elements through the thickness |
+| `fe_rep` (quad) | `"OVERLAP-SHELL"` | quad-weld pattern; must match the joint type |
+| `root_shells` (quad) | `"Single Row"` | one web per seam; `"Double Row"` restores the ANSA default |
+| `fallback_rep` (quad) | `"RBE3-SHELL-RBE3"` | second pass for seams the joint pattern refuses; `""` disables |
+| `restore_properties` (quad) | False | put the original PID back on re-propertied plate shells |
 | `export_nas` / `save_ansa` | — | post-pass output paths |
 
 ## Rules that make or break the weld
@@ -258,6 +358,11 @@ seams built as solids and the remaining 15 fell back to RBE2 in the same call
 | `RBE3-PENTA-RBE3` | returns 0 at every width — the penta/wedge variant is not available for seams in this release, only the hexa brick. |
 | `connections.SetDefault` is session-global | the value survives `session.New()` and every later realisation. A run that "leaves it alone" inherits whatever the previous run set — clear a key with `""` to restore the pattern's own rule. This is what makes two apparently identical runs produce different brick counts. |
 | the pattern settings are not in the API docs | they live in `config/<Profile>.defaults`, hundreds of commented keys per pattern. Grep that file before concluding a dimension is not settable. |
+| `EraseConnectionFeRep` does not undo the re-mesh | shells the pattern rebuilt stay in the model, so **a sweep over several patterns in one session accumulates** — `LASERWELD-SHELL` showed "+818 shells" in a sweep and "+90" in a clean session. One pattern per fresh session, or the numbers lie. |
+| quad patterns only build for their own joint | `OVERLAP-SHELL` leaves 25 of 133 seams with no FE at all; it does not fall back. Report the ids instead of assuming a defect. |
+| nothing undoes the re-propertying | `EraseConnectionFeRep` clears the FE entities, not the plate shells that were reassigned to the weld property. Snapshot element→PID first if the original assignment has to be recoverable. |
+| `RootShells` defaults to `"Double Row"` | a lap-joint weld then shows two quad rows meeting at a ridge. It is not a duplicate — it is the pattern's default; `"Single Row"` gives the single web. |
+| a refused seam is not a tolerance problem | all 22 refused seams already named two parts. `SearchDist` 5/10/20 mm gave 0 and `Parameters_Gap` 0.5–5 mm gave 0, against 1 at the default. Enlarging a search radius never converts a wrong joint type into a right one. |
 | `search_distance` is not monotonic in usefulness | one number for the whole model; too small misses the far plate, too large makes `find_exactly=2` unsatisfiable. Sweep in pairs and carry the failures forward. |
 | `GetAllConnectionSettings(conn)` returns `None` | documented as "no parameters" for `SeamLine_Type`; there is no way to enumerate the legal FE values at runtime. |
 | connectivity is not readable from the entity | `get_entity_values(deck, ["Connectivity"])`, `"CNCTN"`, `"Parts"`, `"PID"` all answer `{}`. Read it back with `OutputConnections(conns, "XML", path)` and parse that. |
@@ -302,6 +407,7 @@ All of these must hold, read from the model and the exported deck:
 | element delta | shell count grew only by the weld-node splits |
 | bar variant | every CBAR has two nodes, `PBARL_ROD` exists, and the exported `PBARL` line carries `DIM1` in columns 41-48 |
 | solid variant | `CHEXA` cards present, every `PSOLID` MID has a `MAT1` in the deck, and the RBE2 left in the deck is attributed to named fallback seams |
+| quad variant | `CQUAD4` count grew, `RBE2`/`RBE3` are zero (a node-shared weld needs neither), the failed connection ids are listed, and the re-propertied shell count is reported |
 
 Reference numbers on a 22-part, 63 188-shell subframe: 145 centerlines, 120 full
 seams + 13 chunk pieces, 133 connections all two-part, 2 252 RBE2, 0 free grids,
@@ -332,6 +438,8 @@ counts connections, not elements, and it accepts nonsense parameters.
   `PBARL ROD`; patches the diameter back into the exported card.
 - `scripts/solid_rep.py` — solid weld: `RBE3-HEXA-RBE3` with `W` set, plus the
   missing `MAT1` appended to the exported deck.
+- `scripts/shell_rep.py` — node-shared quad weld: `OVERLAP-SHELL`, with the re-mesh
+  and re-property side effects counted and the failed seams listed.
 - `references/api-verified.md` — exact signatures and the negative results behind
   every trap above.
 - `references/failure-taxonomy.md` — the measurements from the 143-bead model.

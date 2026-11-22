@@ -45,6 +45,7 @@
 | `skills/ansa-seam-weld/scripts/seam_final.py` | 清理空连接、验收计数、自由节点检查 |
 | `skills/ansa-seam-weld/scripts/rbe2_to_bar.py` | 后处理：把每个两节点 RBE2 换成 CBAR（PBARL ROD），并补回导出丢失的 DIM1 |
 | `skills/ansa-seam-weld/scripts/solid_rep.py` | 实体焊缝：`RBE3-HEXA-RBE3` 出 CHEXA 砖 + 两侧 RBE3，并补上导出缺失的 MAT1 |
+| `skills/ansa-seam-weld/scripts/shell_rep.py` | 四边形焊缝：`OVERLAP-SHELL` 出共节点 CQUAD4，统计重划与改属性副作用并列出失败焊缝 |
 
 ## 工作原理
 
