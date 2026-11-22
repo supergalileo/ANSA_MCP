@@ -30,6 +30,56 @@ import json
 KINDS = ("SHELL", "RBE2", "RBE3", "SOLID", "CBAR")
 
 
+def _mat_line(mid, e_mod=210000.0, nu=0.3, rho=7.85e-9):
+    """One MAT1 in small-field layout: six 8-column fields, MID first."""
+    return "MAT1    %8d%8.6g%8s%8.3f%8s\n" % (mid, e_mod, "", nu, "") + \
+           "        %8.6g\n" % rho
+
+
+def patch_materials(nas_path, e_mod=210000.0, nu=0.3, rho=7.85e-9):
+    """Append a MAT1 for every MID a PSHELL/PSOLID points at but the deck omits.
+
+    The model is fine - all 50 properties resolve to a material - but
+    `OutputNastran` writes only the 22 original MAT1 cards, so the weld
+    properties ship with a dangling MID. A solver either errors or silently
+    substitutes a default, which is worse than an error.
+    """
+    with open(nas_path, encoding="utf-8", errors="ignore") as fh:
+        lines = fh.readlines()
+
+    mat_ids, mids = set(), set()
+    for ln in lines:
+        if ln.startswith("MAT1"):
+            try:
+                mat_ids.add(int(ln[8:16]))
+            except ValueError:
+                pass
+        elif ln.startswith(("PSHELL", "PSOLID")):
+            try:
+                mids.add(int(ln[16:24]))
+            except ValueError:
+                pass
+
+    missing = sorted(m for m in mids - mat_ids if m > 0)
+    if not missing:
+        return 0
+
+    new = [_mat_line(mid, e_mod, nu, rho) for mid in missing]
+    out, done = [], False
+    for ln in lines:
+        if not done and ln.startswith("ENDDATA"):
+            out.extend(new)
+            done = True
+        out.append(ln)
+    if not done:
+        out.extend(new)
+
+    with open(nas_path, "w", encoding="utf-8") as fh:
+        fh.writelines(out)
+    print("  materials appended for MID %s" % missing)
+    return len(missing)
+
+
 def snapshot(deck):
     """{element id: (property id, property entity)} for every shell.
 
@@ -192,6 +242,7 @@ def run(params):
         base.OutputNastran(filename=params["export_nas"])
         report["export_nas"] = params["export_nas"]
         print("exported " + params["export_nas"])
+        report["materials_patched"] = patch_materials(params["export_nas"])
     if params.get("save_ansa"):
         report["save_ansa_rc"] = base.SaveAs(params["save_ansa"])
         print("saved " + params["save_ansa"])

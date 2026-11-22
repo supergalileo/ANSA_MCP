@@ -276,6 +276,16 @@ Two side effects are counted by the script, never left to be discovered later:
 | local re-mesh around the seam | 4 079 shells added, 6 removed |
 | plate shells re-assigned to per-weld properties | **1 971** — thickness kept, material id changed |
 
+Single-row run, measured with `ansa_diff`: shells +2 560, RBE2 2 252 -> 86,
+RBE3 0 -> 300, properties 22 -> 50, **re-propertied 0** after the restore —
+i.e. the restore is visible in the diff, not just claimed.
+
+**The export drops the weld materials.** The model resolves all 50 properties to a
+material, but `OutputNastran` writes only the original 22 `MAT1` cards, leaving
+7 properties with a dangling MID. `patch_materials()` appends them; the deck then
+closes at 28 `MAT1` for 28 distinct MIDs. This is the same failure the solid
+representation has, and it is silent in both.
+
 Report both. A weld pass that quietly re-properties 3 % of the plate is a modelling
 change, not a display detail.
 
