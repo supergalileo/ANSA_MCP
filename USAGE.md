@@ -75,11 +75,16 @@ WorkBuddy 在 `%USERPROFILE%\.workbuddy\mcp.json`（Claude Code 是 `.mcp.json`�
 
 ### 2.4 多版本切换
 
+先做完 2.2（脚本是读改写已有的 `%USERPROFILE%\.workbuddy\mcp.json`，没有这个文件会报错），然后：
+
 ```bash
-python tools\switch_ansa.py 24.1.2     # 改 mcp.json 里的 ANSA_HOME
+python tools\switch_ansa.py            # 只列出本机装了哪几个 ANSA
+python tools\switch_ansa.py 24.1.2     # 按版本号切
+python tools\switch_ansa.py 2          # 或按列表里的序号
 ```
 
-改完**必须重开 MCP 会话**。
+它只改 `ansa` 服务的 `ANSA_HOME`，其他配置一律保留。用 Claude Code / Cursor 的得手动改
+各自配置文件。改完**必须重开 MCP 会话**。
 
 ---
 
@@ -239,10 +244,11 @@ run(PARAMS)
 .venv\Scripts\python.exe tests\test_ledger.py    # 离线 35 项
 .venv\Scripts\python.exe tests\test_checks.py    # 离线 25 项，快照/差异/自检的代码契约
 .venv\Scripts\python.exe tests\test_mcp.py       # MCP stdio 契约
-.venv\Scripts\python.exe tests\test_server.py batch   # 会启动 ANSA，占 license
+.venv\Scripts\python.exe tests\test_server.py batch     # 会启动 ANSA（batch），占 license
+.venv\Scripts\python.exe tests\test_gui_tools.py        # 会启动 ANSA（gui），占 license
 ```
 
-前三条不占 license，装完先跑它们。
+前三条不占 license，装完先跑它们。后两条各自启动一个实例，跑完自动退出。
 
 ---
 
@@ -253,11 +259,20 @@ run(PARAMS)
 **连接只做了两类**：螺栓、缝焊。点焊（`SpotweldPoint_Type`）、胶接（`AdhesiveLine_Type`）、
 包边（`Hemming_Type`）尚未实现——它们的接口与缝焊同源，但没验证过，不要假设能用。
 
-**`ansa_api_search`** 依赖 `tools\ansa_api_index.json`，按 ANSA 23.1.1 文档生成；
-版本不同就用 `python tools\build_api_index.py --ansa-home <安装目录>` 重建。
+**`ansa_api_search`** 依赖 `tools\ansa_api_index.json`。这个文件不进 git（体积大、随安装版本变化），
+新克隆的仓库里没有，第一次用之前先生成：
+
+```bash
+python tools\build_api_index.py                          # 自动找本机 ANSA 安装
+python tools\build_api_index.py --ansa-home "%ANSA_HOME%"
+```
+
+索引也可以放在别处，用环境变量 `ANSA_API_INDEX` 指向它。随包分发的索引按 ANSA 23.1.1
+文档生成（5 689 条函数）；装的不是这个版本就重建，索引不匹配时搜出来的签名会骗人。
 
 ---
 
 ## 10. 版本与变更
 
-变更记录见 `CHANGELOG.md`。当前版本以那里最新一条为准。
+版本号就是日期，当前 **2026-11-22**，以 `CHANGELOG.md` 顶部一节为准。
+README / USAGE 不自带版本号，避免三处对不上。

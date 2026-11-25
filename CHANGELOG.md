@@ -2,7 +2,24 @@
 
 按时间倒序。每条只写「改了什么、为什么」，不写「优化了体验」这类空话。
 
+**当前版本：2026-11-22**。版本号就是日期，以本文件最上面的一节为准；
+README / USAGE 不再各自写版本号，改动到这里就同步。
+
 ## 2026-11-22
+
+### 修复：焊缝四边形导出的 MAT1 悬空（`shell_rep.py`）
+
+class5 全量跑通后用 `ansa_verify` 的 native 组验收，暴露一个会静默出错的问题：
+模型里 50 个属性都有材料（MAT1 1–28 齐全），但 `OutputNastran` 只写原有的 22 个 MAT1，
+7 个焊缝属性的 MID 悬空。求解器要么报错，要么悄悄用默认材料。
+
+- `patch_materials()` 同时扫 `PSHELL` 与 `PSOLID` 的 MID，缺失的追加 MAT1，
+  新卡用默认材料 210000 / 0.3 / 7.85e-9；修补后材料闭环：28 张 MAT1 对 28 个 MID
+- 与实体焊缝同一个坑，两种表示都会丢；技能文档里已并列记录
+
+class5 结果：**连接覆盖 133/133**——111 条共节点 quad + 22 条 `RBE3-SHELL-RBE3` 回退，
+133 条连接都拿到了 FE 表示。注意这只是覆盖数，材料闭环是上面那件事，两者分开看。
+同一轮 `ansa_diff`：SHELL +2 560、RBE2 2 252→86、RBE3 0→300、属性 22→50、repropertied 0（属性还原生效）。
 
 ### 新增：模型状态三工具（`ansa_snapshot` / `ansa_diff` / `ansa_verify`）
 
@@ -71,7 +88,40 @@ ANSA 的检查覆盖“按它的规范是否有问题”——两者是互补，
   而已知但建不出的模式返回 0，两者症状不同，据此可以反推模式是否有效
 - 143 根焊道、145 条中心线，最终 133 条连接、2 252 个 RBE2、0 自由节点
 
+## 2026-11-19
+
+### 新增：装配 STEP 拆分为单零件并分类（`scripts/split_step.py`）
+
+整车装配往往是一个 STEP 塞几百个零件，原流程只吃单件。新增纯 Python 拆分器，
+不启动 ANSA、不占 license：
+
+- 解析 AP203/AP214，按 `PRODUCT` 或 `MANIFOLD_SOLID_BREP` 拆分
+- 装配变换累积后烘焙进坐标，零件落在实际位置
+- 按 solid 名称（CATIA X2 UTF-16BE 转义）分类：钣金件 / 紧固件 / 焊缝圆管 / 非金属 / 焊点
+- 混合件（钣金 + 焊接圆管）默认按实体自动拆开
+- `parallel_batch.py` / `process_folder.py` 放开扩展名限制，支持
+  `.stp/.step/.igs/.x_t/.jt`，拆分结果直接进原流程
+
+实测 51 MB 尾门装配：面数与源文件一致（7 800），分类出 143 个焊缝实体（127 个在 CATIA 里就叫 welding）。
+
+三个坑写进 `references/step-splitting.md`：`VECTOR` 参数是 `(name,#direction,magnitude)`，
+当坐标改写会崩；`SHAPE_REPRESENTATION_RELATIONSHIP` 入度为 0，漏掉后导入 0 面且无报错；
+bbox 污染源是 `AXIS2_PLACEMENT_3D` 原点，且圆柱直径不在任何顶点上。
+
+## 2026-11-17
+
+### 新增：`skills/ansa-bolt-connection`（螺栓连接技能）
+
+从螺栓 CATPart 提取轴线与杆径，为每个螺栓建 2 RBE2 + 1 CBAR（`PBARL ROD`）：
+
+- 孔心取自 ANSA 孔识别再吸附到螺栓轴线，不从孔边节点取
+- 从节点按孔半径 + 5 mm 抓整圈，用角度缺口 ≤45° 判完整性
+- 多层板合并到同一片 RBE2；单层板（焊接螺栓/盲孔）只建 1 片、不建梁
+- 两阶段 `extract` / `build`；导出后自动补 `PBARL` 的 `DIM1`（ANSA 双向丢该字段）
+
+含 `references/api-verified.md`（验证过的 API 签名 + 18 螺栓实测基准）。
+
 ## 更早
 
-上一版只包含 `ansa-midsurface-mesh`（抽中面 + 划网格 + 批量 + 交付表）。
+2026-11-17 之前的版本只有 `ansa-midsurface-mesh`（抽中面 + 划网格 + 批量 + 交付表），
 连接建模当时明确不在范围内。

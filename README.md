@@ -13,9 +13,10 @@
 > caller can tell "the API returned" apart from "the model actually changed".
 > ANSA 24.1.2 (23.0.0+), Windows, MIT.
 
-**版本**：2026-11-22。实测环境 ANSA 24.1.2；API 索引与文档均取自 24.1.2 安装目录。
-本版新增模型状态三工具（`ansa_snapshot` / `ansa_diff` / `ansa_verify`）与 `ansa-seam-weld` 技能，
-变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+**当前版本**：2026-11-22，以 [CHANGELOG.md](CHANGELOG.md) 顶部一节为准。
+实测环境 ANSA 24.1.2；随包的 API 索引取自 23.1.1 安装目录（5 689 条函数），
+装的是别的版本就用 `tools/build_api_index.py` 重建，见 [USAGE.md](USAGE.md) 第 9 节。
+本版新增模型状态三工具（`ansa_snapshot` / `ansa_diff` / `ansa_verify`）与 `ansa-seam-weld` 技能。
 
 ---
 
@@ -28,6 +29,7 @@
 | `ansa_iap.py` | IAP 协议实现（重写了官方参考实现） |
 | `ansa_ledger.py` | 写操作幂等台账 |
 | `tests/` | 三层测试，见 [tests/README.md](tests/README.md) |
+| `docs/` | 设计调研与实测记录（如 [连接建模 API 调研](docs/connectivity_api_survey_2026-11-10.md)） |
 | `tools/switch_ansa.py` | 列出本机 ANSA 安装并切换 MCP 配置里的 `ANSA_HOME` |
 | `tools/build_api_index.py` | 从 ANSA 自带 Sphinx 文档生成 `ansa_api_search` 索引 |
 | `skills/ansa-midsurface-mesh/` | 抽中面 + 划网格 Skill |
@@ -37,6 +39,12 @@
 | `skills/ansa-midsurface-mesh/scripts/make_summary.py` | 跑完出四张交付表 + 质检门 |
 | `skills/ansa-midsurface-mesh/scripts/deck_stats.py` | 直接从 `.nas` 算 quad 比、自由边、分块 |
 | `skills/ansa-midsurface-mesh/scripts/mesh_engine.py` | 两条网格路线（`mesh.Mesh` / Batch Mesh），由 `.ansa_mpar` + `.ansa_qual` 驱动 |
+| `skills/ansa-midsurface-mesh/scripts/split_step.py` | 装配 STEP 拆单件并分类（纯 Python，不占 license） |
+| `skills/ansa-midsurface-mesh/scripts/casting_midsurf.py` | 二遍救援：`autosurf`（默认）或 `middle` 两条路，见下文 |
+| `skills/ansa-midsurface-mesh/scripts/casting_batch.py` | 二遍救援的批量版，一件一个 ANSA 进程 |
+| `skills/ansa-midsurface-mesh/scripts/rescue_midsurf.py` | 单件 `MidSurfAuto` 包装，已被 `casting_midsurf.py --casting autosurf` 取代 |
+| `skills/ansa-midsurface-mesh/scripts/organize_output.py` | 把平铺输出目录按处理阶段分成 6 类，出清单 + README |
+| `skills/ansa-midsurface-mesh/scripts/inspect_model.py` | 只读巡检：实体数、分件 bbox 与厚度分布 |
 | `skills/ansa-bolt-connection/` | 螺栓连接 Skill：从螺栓实体建 2 RBE2 + 1 CBAR（PBARL ROD） |
 | `skills/ansa-bolt-connection/scripts/bolt_connection.py` | 两阶段：提螺栓轴线 → 建连接（孔心对齐、整圈抓取、多层合并、单层单片） |
 | `skills/ansa-seam-weld/` | 焊缝 Skill：焊缝管 → seam line → 连接管理器自动生成 SeamLine 连接 |
@@ -55,7 +63,7 @@
 MCP 客户端 (stdio)
       │
       ▼
-ansa_mcp_server.py ── FastMCP · 15 tools · 幂等台账
+ansa_mcp_server.py ── FastMCP · 22 tools · 幂等台账
       │
       │ TCP 127.0.0.1:<port>，IAP 线协议
       ▼
@@ -127,6 +135,9 @@ pip install -r requirements.txt
 | `ansa_save` | 保存 `.ansa`；目标已存在需 `overwrite=true` |
 | `ansa_export` | 导出求解器文件；目标已存在需 `overwrite=true` |
 | `ansa_model_info` | 模型统计；`detail=true` 按类型聚合属性/材料/零件 |
+| `ansa_snapshot` | 给当前模型拍照：实体数、单元→属性映射、属性表（厚度/材料） |
+| `ansa_diff` | 与快照逐单元比对：增 / 删 / **改属性**，附样本 id |
+| `ansa_verify` | 结构自检：`counts` / `props` / `mats` / `rbe` / `free` / `quality`，外加 `native`（调 ANSA Checks Manager，仅供参考不算门槛） |
 | `ansa_list_entities` | 列出某类实体的 id / 名称 / 指定字段 |
 | `ansa_get_entity_values` | 读单个实体的完整编辑卡 |
 | `ansa_mesh` | 划网格（`batch` 批处理生成器，或 free/best/map） |
@@ -389,8 +400,10 @@ base.GetEntityCardValues(deck, ent, fields)
 
 ```bash
 python tests/test_ledger.py          # 离线，不启动 ANSA，不占 license
-python tests/test_mcp.py             # MCP stdio 契约
+python tests/test_checks.py          # 离线，快照/差异/自检的代码契约
+python tests/test_mcp.py             # MCP stdio 契约，不启动 ANSA
 python tests/test_server.py batch    # 真实 batch 实例，跑完自动退出
+python tests/test_gui_tools.py       # 真实 gui 实例，验截图/菜单/异步任务
 ```
 
 见 [tests/README.md](tests/README.md)。
@@ -403,9 +416,11 @@ python tests/test_server.py batch    # 真实 batch 实例，跑完自动退出
 - **`ansa_screenshot` 需要 gui 模式**：batch 模式没有图形窗口，函数返回 0 但不产生文件。
 - **只支持单实例**：一个服务端进程管一个 ANSA 进程。
 - **IAP 是同步的**：ANSA 在主线程执行脚本且无法取消，长任务会冻结 GUI，超时后只能等它跑完。
-- **不做连接建模**：各零件独立划网格，节点不共享，焊点/tie/rigid 需另外定义。
-  这是当前能力边界，下一阶段要做连接能力，方案与坑见
-  [docs/交接_连接能力_2026-11-09.md](docs/交接_连接能力_2026-11-09.md)。
+- **连接只做了两类**：螺栓（`ansa-bolt-connection`：2 RBE2 + 1 CBAR）和缝焊
+  （`ansa-seam-weld`：RBE2 / CBAR / 实体 CHEXA+RBE3 / 四边形共节点）。
+  点焊（`SpotweldPoint_Type`）、胶接（`AdhesiveLine_Type`）、包边（`Hemming_Type`）
+  尚未实现——接口与缝焊同源，但没验证过，不要假设能用。
+  抽中面批处理里各零件仍是独立划网格、节点不共享，跨件连接得靠上面两个技能或另外定义。
 - 服务端 stdout 必须保持干净（MCP stdio 通道），ANSA 子进程输出重定向到 `logs/ansa_<port>.log`。
 
 ## 实测性能（ANSA 23.0.0 / GT 710 / Win10）
