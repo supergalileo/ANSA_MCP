@@ -274,5 +274,5 @@ python tools\build_api_index.py --ansa-home "%ANSA_HOME%"
 
 ## 10. 版本与变更
 
-版本号就是日期，当前 **2026-11-22**，以 `CHANGELOG.md` 顶部一节为准。
+版本号就是日期，当前 **2026-11-26**，以 `CHANGELOG.md` 顶部一节为准。
 README / USAGE 不自带版本号，避免三处对不上。

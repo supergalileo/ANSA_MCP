@@ -2,8 +2,35 @@
 
 按时间倒序。每条只写「改了什么、为什么」，不写「优化了体验」这类空话。
 
-**当前版本：2026-11-22**。版本号就是日期，以本文件最上面的一节为准；
+**当前版本：2026-11-26**。版本号就是日期，以本文件最上面的一节为准；
 README / USAGE 不再各自写版本号，改动到这里就同步。
+
+## 2026-11-26
+
+### 修复：`ansa_api_search` 找不到索引时把人指向一个 404 地址
+
+原文案教用户 `pip install git+https://github.com/<ansa-api-mcp>`——那是个占位符，
+照做必然 404；而索引被 `.gitignore` 排除，新克隆的仓库里恰好就是没有，
+所以新人最先撞到的错误提示本身就是错的。
+
+改为指向 `python tools/build_api_index.py`（自动探测失败时加 `--ansa-home <安装目录>`），
+并点明索引由 `.gitignore` 排除、新克隆必然没有，也可以设 `ANSA_API_INDEX` 指到已有的 JSON。
+只改这一处返回文案，索引查找顺序没动。
+
+### 文档：README / USAGE 与实现对齐
+
+一次性修掉对外描述里已经和代码脱节的地方：
+
+- README 工作原理图写 `15 tools`，实际 22（工具表也补上了 `ansa_snapshot` / `ansa_diff` / `ansa_verify`）
+- README 说 API 索引取自 24.1.2 安装目录，实际随包的索引是 `ansa_v23.1.1`、5 689 条函数
+- README「已知限制」还写着**不做连接建模**，且链到 `docs/交接_连接能力_2026-11-09.md`——
+  该文件被 `.gitignore` 排除、仓库里不存在，是死链；改为说明连接只做了螺栓与缝焊
+- README 目录表漏了 `split_step.py`、两个 casting 脚本、`rescue_midsurf.py`、`organize_output.py`、
+  `inspect_model.py`；测试段漏了 `test_checks.py` 与 `test_gui_tools.py`
+- USAGE 自检清单补 `test_gui_tools.py`；写明 `tools/ansa_api_index.json` 不进 git、首次要先生成；
+  写明 `switch_ansa.py` 只改 `~/.workbuddy/mcp.json`、且要先有该文件
+
+版本口径统一为日期制，README / USAGE 不再各自写版本号。
 
 ## 2026-11-22
 

@@ -13,10 +13,10 @@
 > caller can tell "the API returned" apart from "the model actually changed".
 > ANSA 24.1.2 (23.0.0+), Windows, MIT.
 
-**当前版本**：2026-11-22，以 [CHANGELOG.md](CHANGELOG.md) 顶部一节为准。
+**当前版本**：2026-11-26，以 [CHANGELOG.md](CHANGELOG.md) 顶部一节为准。
 实测环境 ANSA 24.1.2；随包的 API 索引取自 23.1.1 安装目录（5 689 条函数），
 装的是别的版本就用 `tools/build_api_index.py` 重建，见 [USAGE.md](USAGE.md) 第 9 节。
-本版新增模型状态三工具（`ansa_snapshot` / `ansa_diff` / `ansa_verify`）与 `ansa-seam-weld` 技能。
+2026-11-22 那版新增模型状态三工具（`ansa_snapshot` / `ansa_diff` / `ansa_verify`）与 `ansa-seam-weld` 技能。
 
 ---
 
