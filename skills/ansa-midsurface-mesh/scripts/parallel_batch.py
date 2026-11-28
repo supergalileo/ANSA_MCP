@@ -144,6 +144,24 @@ INPUT_EXT = (".catpart", ".stp", ".step", ".igs", ".iges",
              ".x_t", ".x_b", ".jt", ".sldprt")
 
 
+def _part_code(base):
+    """Mirror of `process_part.part_code` - keep the two in step.
+
+    Imported rather than duplicated would be better, but `process_part.py` touches
+    `base` at module level (ANSA injects it), so it cannot be imported outside a
+    running session.
+    """
+    stem = os.path.splitext(base)[0]
+    parts = stem.split("_")
+    if len(parts) > 1 and parts[1]:
+        if re.match(r"^[A-Z]\d{3}[A-Z]?\d{4,}$", parts[1]):
+            return parts[1]
+        if re.match(r"^[A-Z]\d{3}[A-Z]?\d{4,}", parts[0]):
+            return stem
+        return parts[1]
+    return stem
+
+
 def build_stems(files):
     """Authoritative output stem per input file, decided on the **whole** src list.
 
@@ -152,20 +170,23 @@ def build_stems(files):
     gets the plain code twice and one file overwrites the other. On the 540-part
     body-in-white model 44 part numbers sit at 2-4 positions: 115 names collided and the run
     delivered 452 `.ansa` for 540 parts without reporting anything.
+
+    The code itself comes from `_part_code`, which knows both layouts in use.
+    Splitting on "_" and taking token 1 - what this function used to do - is
+    correct for `B####_A##########` and destroys `A##########_BKDN02`, where the
+    part number leads: 44 sub-assembly parts came out as `BKDN02` / `BKDN04`, and
+    three instances of one bushing collapsed onto a single output file.
     """
     seen, out = {}, {}
     for path in sorted(files, key=os.path.basename):
         base = os.path.basename(path)
-        stem = os.path.splitext(base)[0]
-        parts = stem.split("_")
-        code = parts[1] if len(parts) > 1 and parts[1] else stem
+        code = _part_code(base)
         if code not in seen:
             seen[code] = 1
             out[base] = code
         else:
             seen[code] += 1
-            m = re.match(r"^([A-Za-z]\d+)_", base)
-            out[base] = "%s__%s" % (code, m.group(1) if m else seen[code])
+            out[base] = "%s__%d" % (code, seen[code])
     return out
 
 

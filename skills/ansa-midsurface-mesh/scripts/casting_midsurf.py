@@ -209,7 +209,7 @@ def cast_autosurf(cat, params):
     """
     name = os.path.basename(cat)
     stem = os.path.splitext(name)[0]
-    code = stem.split("_")[1] if "_" in stem else stem
+    code = stem   # full stem: keeps the part number AND the __NN instance suffix
     log = {"part": name, "code": code, "path": "autosurf"}
 
     session.New("discard")
@@ -298,7 +298,7 @@ def cast_autosurf(cat, params):
 def cast_one(cat, params):
     name = os.path.basename(cat)
     stem = os.path.splitext(name)[0]
-    code = stem.split("_")[1] if "_" in stem else stem
+    code = stem   # full stem: keeps the part number AND the __NN instance suffix
     # Default to MidSurfAuto: it is the only path that yields one connected patch.
     # Set "casting": "middle" to get the old MiddleGeometry + own-mesher behaviour.
     if str(params.get("casting", "autosurf")).lower() == "autosurf":

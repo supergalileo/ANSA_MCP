@@ -75,21 +75,33 @@ CODE_RE = re.compile(r"([A-Za-z]\d{7,10})")
 
 
 def part_code(path, override=None):
-    """B####_A##########.CATPart -> A##########
+    """Part number from either naming convention, instance suffix preserved.
 
-    The code is the **second underscore token**, not everything after the first
-    underscore and not a fixed digit pattern:
-        B####_A##########        -> A##########
-        R###_A##########_WELD    -> A##########   (drop the suffix)
-        O###_A##########         -> A007S######   (letters inside the number)
-    A purely numeric regex misses the `A007S...` family; splitting once keeps the
-    `_WELD` suffix. Falls back to the whole stem when there is no underscore.
+    Two layouts are in use across the projects this skill serves:
+
+        B####_A##########        -> A##########    (BIW: prefix first)
+        R###_A##########_WELD    -> A##########    (drop the trailing marker)
+        A##########_BKDN02       -> A##########_BKDN02  (suspension: part first)
+
+    Splitting on "_" and taking token 1 handles the first two and silently
+    destroys the third - `A0070800050_BKDN02` became `BKDN02`, dropping the part
+    number, and two instances of the same sub-assembly collided on one output
+    name. So: if the SECOND token looks like a part number, the file follows the
+    BIW layout and that token is the code; if the FIRST token does, the part
+    number leads and the whole stem is kept, because the trailing `_BKDN02` (and
+    any `__NN` install suffix) is what distinguishes one instance from another.
     """
     if override:
         return str(override)
     stem = os.path.splitext(os.path.basename(path))[0]
     parts = stem.split("_")
-    return parts[1] if len(parts) > 1 and parts[1] else stem
+    if len(parts) > 1 and parts[1]:
+        if re.match(r"^[A-Z]\d{3}[A-Z]?\d{4,}$", parts[1]):
+            return parts[1]
+        if re.match(r"^[A-Z]\d{3}[A-Z]?\d{4,}", parts[0]):
+            return stem
+        return parts[1]
+    return stem
 
 
 def gauge_tag(t):
