@@ -3,19 +3,20 @@
 用 MCP 客户端（WorkBuddy / Claude Code / Cursor / Codex）直接驱动 **BETA CAE ANSA** 干活：
 查模型、划网格、抽中面、赋厚度、截图、导出求解器文件、执行任意 ANSA Python。
 
-附带三个可复用的 Agent Skill：**抽中面划壳网格**、**螺栓连接**、**焊缝连接（刚接/弹性杆/实体/四边形四种表示）**，
+附带四个可复用的 Agent Skill：**抽中面划壳网格**、**螺栓连接**、**焊缝连接（刚接/弹性杆/实体/四边形四种表示）**、**橡胶衬套连接（零长度 / 真实长度 CBUSH）**，
 以及一组模型状态工具（**快照 / 差异 / 结构自检**），用来回答「这一步到底改了什么、模型还完整吗」。
 
 > **English summary.** An MCP server that drives a live BETA CAE ANSA session over the
 > official Inter ANSA Protocol, plus reusable agent skills for mid-surface meshing,
-> bolted joints and seam welds. The server adds idempotent write operations (`operation_id`),
+> bolted joints, seam welds and rubber bushings (CBUSH). The server adds idempotent write operations (`operation_id`),
 > an explicit `OUTCOME_UNKNOWN` state for lost responses, and layered evidence so a
 > caller can tell "the API returned" apart from "the model actually changed".
 > ANSA 24.1.2 (23.0.0+), Windows, MIT.
 
-**当前版本**：2026-11-26，以 [CHANGELOG.md](CHANGELOG.md) 顶部一节为准。
+**当前版本**：2026-11-28，以 [CHANGELOG.md](CHANGELOG.md) 顶部一节为准。
 实测环境 ANSA 24.1.2；随包的 API 索引取自 23.1.1 安装目录（5 689 条函数），
 装的是别的版本就用 `tools/build_api_index.py` 重建，见 [USAGE.md](USAGE.md) 第 9 节。
+2026-11-28 那版新增 `ansa-bushing-connection` 技能（CBUSH/PBUSH 橡胶衬套）与 `partial` 台账状态；
 2026-11-22 那版新增模型状态三工具（`ansa_snapshot` / `ansa_diff` / `ansa_verify`）与 `ansa-seam-weld` 技能。
 
 ---
@@ -47,6 +48,8 @@
 | `skills/ansa-midsurface-mesh/scripts/inspect_model.py` | 只读巡检：实体数、分件 bbox 与厚度分布 |
 | `skills/ansa-bolt-connection/` | 螺栓连接 Skill：从螺栓实体建 2 RBE2 + 1 CBAR（PBARL ROD） |
 | `skills/ansa-bolt-connection/scripts/bolt_connection.py` | 两阶段：提螺栓轴线 → 建连接（孔心对齐、整圈抓取、多层合并、单层单片） |
+| `skills/ansa-bushing-connection/` | 衬套连接 Skill：橡胶件 → 2 RBE2 + 1 CBUSH/PBUSH（零长度或真实长度） |
+| `skills/ansa-bushing-connection/scripts/bushing_connection.py` | 两阶段：提橡胶轴线/板位 → 建 CBUSH（自动识别孔缘环、按板距定跨距、K1..K6 按衬套刚度公式生成） |
 | `skills/ansa-seam-weld/` | 焊缝 Skill：焊缝管 → seam line → 连接管理器自动生成 SeamLine 连接 |
 | `skills/ansa-seam-weld/scripts/seam_extract.py` | 逐根提取焊道中心线（15 点采样，处理 76mm 弦高的弯曲焊缝） |
 | `skills/ansa-seam-weld/scripts/seam_build.py` | 装配 + 建线 + 阶梯挂件（distance × find_exactly）+ 一次性转 RBE2 |
@@ -276,6 +279,51 @@ RESULT = run({
 已知坑（`CreateEntity` 建不了 CBAR/PBARL/GRID、`PBARL` 的 `DIM1` 导入导出双向丢失、
 `.ansa` 在 batch 模式打不开）见 [SKILL.md](skills/ansa-bolt-connection/SKILL.md)
 和 [references/api-verified.md](skills/ansa-bolt-connection/references/api-verified.md)。
+
+## Skill：ansa-bushing-connection
+
+把「橡胶衬套 + 两块独立网格的板」变成可求解的弹簧连接：一个 CBUSH、一个 PBUSH、每块板一片蜘蛛。
+
+- 拓扑：`RBE2_A(GN=板A孔心) + CBUSH/PBUSH(K1..K6) + RBE2_B(GN=板B孔心)`
+- 两种理想化，**刚度完全等价**（已实测到五位数字）：
+  - `mode: "point"`（默认）—— 2 mm 元件在跨距中点，孔距由 RBE2 辐条承担
+  - `mode: "spanning"` —— 元件长度 = 真实板距，网格点落在两块板的中面
+- PBUSH 顺序固定为 **[`轴向`, `径向`, `径向`, `扭转`, `摇摆`, `摇摆`]**，写成别的顺序模型会静默错 4 倍
+- 板位不用手输：沿轴线在橡胶跨度内做 1 mm 直方图，自动取两块板的 z 位置（class5 上误差 <0.5 mm）
+- 孔缘环半径也从网格量（`_auto_band` 取"第一个已有 ≥6 个节点的半径"），不用假设 31.5 mm
+
+安装：把 `skills/ansa-bushing-connection/` 复制到 `~/.workbuddy/skills/`。
+
+用法（在 `ansa_run_python` / `ansa_run_async` 里执行）：
+
+```python
+exec(open(r"<skill>/scripts/bushing_connection.py", encoding="utf-8").read(), globals())
+
+# 阶段 1：从橡胶 CATPart/STEP 提轴线（会替换模型），同轴件自动合并成一只衬套
+run({"stage": "extract", "rubber": [r"D:/parts/06_nonmetal"], "work_dir": r"D:/work"})
+
+# 阶段 2：当前模型须已是结构网格
+RESULT = run({
+    "stage": "build", "geo": r"D:/work/bushing_geo.json", "work_dir": r"D:/work",
+    "mode": "point",            # 或 "spanning"
+    "k_rad": 1000.0,            # 径向刚度占位值，N/mm
+    "export_nas": r"D:/out/model_with_bushings.nas",
+})
+```
+
+刚度量级（class5，Ø63 孔、44/24 mm 跨距，`k_rad=1000 N/mm` 占位）：
+
+| | K1 轴向 | K2/K3 径向 | K4 扭转 | K5/K6 摇摆 |
+|---|---|---|---|---|
+| BUSH_1 | 236.1 | 1000 | 27 430 | 161 333 |
+| BUSH_2 | 432.9 | 1000 | 49 595 | 44 247 |
+
+同一模型两种建法解出来的刚度一致（1000 N：+Z 165.6 N/mm、+Y 9913.9 N/mm），所以选哪种只看交付习惯，不看精度。
+
+已知坑（CBUSH 不能用 `CreateEntity` 建、G0 是**网格号**不是坐标系、`ERROR #40` 零长度、
+`ERROR #99` 缺 G0、ANSA 导出把 8 列 PBUSH 挤成 `27429.8161333.3` 丢 K5/K6）见
+[SKILL.md](skills/ansa-bushing-connection/SKILL.md) 和
+[references/api-verified.md](skills/ansa-bushing-connection/references/api-verified.md)。
 
 ## Skill：ansa-midsurface-mesh
 

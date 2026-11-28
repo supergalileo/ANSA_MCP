@@ -1,11 +1,11 @@
 # 使用文档 · ANSA MCP + Skills
 
-一套让 AI 直接操作 ANSA 的工具：**MCP 服务**负责能动手（22 个工具），**Skill** 负责知道怎么动（三个领域工作流）。
+一套让 AI 直接操作 ANSA 的工具：**MCP 服务**负责能动手（22 个工具），**Skill** 负责知道怎么动（四个领域工作流）。
 两者可以分开用，一起装才是完整链路。
 
 - 适用：Windows + BETA CAE ANSA（实测 24.1.2，23.x 需自行复核）
 - 许可：MIT
-- 内容：`ansa_mcp_server.py` + 22 个 MCP 工具 + 3 个 Agent Skill + 一批可离线运行的脚本
+- 内容：`ansa_mcp_server.py` + 22 个 MCP 工具 + 4 个 Agent Skill + 一批可离线运行的脚本
 
 ---
 
@@ -16,9 +16,10 @@
 | MCP 工具 | 启停/连接、跑任意 ANSA Python、开存导出、网格、实体查询、异步长任务、截图、**模型快照与差异**、**结构自检** | 不替你做工程判断 |
 | `ansa-midsurface-mesh` | 薄壁件抽中面 → 划壳网格 → 批处理 → 交付表 | 体网格 |
 | `ansa-bolt-connection` | 螺栓实体 → 2 RBE2 + 1 CBAR(PBARL ROD) | 焊接螺母等组合件 |
+| `ansa-bushing-connection` | 橡胶衬套 → 2 RBE2 + 1 CBUSH/PBUSH（零长度或真实长度，K1..K6 自动算） | 橡胶本体的超弹/频变特性 |
 | `ansa-seam-weld` | 焊道管 → seam line → **RBE2 / CBAR / 实体 CHEXA+RBE3 / 四边形共节点** 四种表示 | 点焊、胶接、包边（尚未做） |
 
-三个技能各自带 `SKILL.md`（触发词、流程、坑表）和 `scripts/`（可直接 `exec` 的脚本），
+四个技能各自带 `SKILL.md`（触发词、流程、坑表）和 `scripts/`（可直接 `exec` 的脚本），
 细节看技能目录，本文只讲怎么装、怎么验、怎么排错。
 
 ---
@@ -39,7 +40,7 @@
 
 ### 2.1 建虚拟环境
 
-```bash
+```bat
 cd /d %REPO%
 python -m venv .venv
 .venv\Scripts\activate
@@ -71,7 +72,8 @@ WorkBuddy 在 `%USERPROFILE%\.workbuddy\mcp.json`（Claude Code 是 `.mcp.json`�
 ### 2.3 验证
 
 让 agent 调 `ansa_status`：`connected: false` 是正常的（还没启动 ANSA）；
-能返回版本号就说明协议层通了。再调 `ansa_launch`，13–45 秒后 `connected: true`。
+能返回版本号就说明协议层通了。再调 `ansa_launch`，通常 10–20 秒后 `connected: true`
+（量级参考 README 的实测性能表：gui 12.8 s、batch 4.0 s）。
 
 ### 2.4 多版本切换
 
@@ -90,16 +92,17 @@ python tools\switch_ansa.py 2          # 或按列表里的序号
 
 ## 3. 装 Skill
 
-把三个目录分别复制到 agent 的 skill 目录：
+把四个目录分别复制到 agent 的 skill 目录：
 
 | 技能 | 目标 |
 |---|---|
 | `skills\ansa-midsurface-mesh\` | `%USERPROFILE%\.workbuddy\skills\ansa-midsurface-mesh\` |
 | `skills\ansa-bolt-connection\` | `...\skills\ansa-bolt-connection\` |
 | `skills\ansa-seam-weld\` | `...\skills\ansa-seam-weld\` |
+| `skills\ansa-bushing-connection\` | `...\skills\ansa-bushing-connection\` |
 
 Claude Code 原生路径是 `%USERPROFILE%\.claude\skills\<name>\`。
-`SKILL.md` 的 `description` 会自动触发——说「抽中面划 5mm 网格」「建螺栓连接」「这几根焊缝连起来」时 agent 会加载对应技能。
+`SKILL.md` 的 `description` 会自动触发——说「抽中面划 5mm 网格」「建螺栓连接」「这几根焊缝连起来」「建一个衬套连接」时 agent 会加载对应技能。
 
 装完**新开一次会话**才会出现在技能列表里。
 
@@ -154,7 +157,7 @@ Claude Code 原生路径是 `%USERPROFILE%\.claude\skills\<name>\`。
 
 ---
 
-## 5. 三个技能的最短路径
+## 5. 四个技能的最短路径
 
 ### 5.1 抽中面 + 划网格
 
@@ -168,7 +171,8 @@ PARAMS = {
     "save": r"D:/out/part.ansa",
     "nas":  r"D:/out/part.nas",
 }
-exec(open(r"%USERPROFILE%/.workbuddy/skills/ansa-midsurface-mesh/scripts/process_part.py", encoding="utf-8").read(), globals())
+import os
+exec(open(os.path.expandvars(r"%USERPROFILE%/.workbuddy/skills/ansa-midsurface-mesh/scripts/process_part.py"), encoding="utf-8").read(), globals())
 RESULT
 ```
 
@@ -180,9 +184,17 @@ RESULT
 ### 5.2 螺栓连接
 
 ```python
-PARAMS.update({"stage": "all", "work_dir": r"D:/out/bolt"})
+PARAMS.update({
+    "stage": "all",
+    "bolts": [r"D:/bolts"],                # 螺栓 CATPart 目录（或文件清单）
+    "structure": r"D:/out/structure.nas",  # 结构网格模型，stage="all" 必需
+    "work_dir": r"D:/out/bolt",
+})
 exec(open(r".../ansa-bolt-connection/scripts/bolt_connection.py", encoding="utf-8").read(), globals())
 ```
+
+PARAMS 沿用 5.1 那段。`stage="all"` 会先打开螺栓件、再重新导入 `structure`；
+不给 `structure` 会直接抛 `RuntimeError`，`bolts` 也同样必填。
 
 每个螺栓出 2 个 RBE2 + 1 根 CBAR。注意 `PBARL` 的 DIM1 在导入和导出时都会丢，脚本两处都补。
 
@@ -197,13 +209,41 @@ exec(open(r".../ansa-bolt-connection/scripts/bolt_connection.py", encoding="utf-
 | `RBE3-HEXA-RBE3` | CHEXA 实体砖 + 两侧 RBE3 | 要传力、要看焊缝附近应力 | 132 / 133 |
 | `OVERLAP-SHELL` | 共节点 CQUAD4 | 要像真焊缝的四边形连接 | 111 + 22（回退）= 133 |
 
+前提：当前模型里已有 `SeamLine_Type` 连接——先按 SKILL.md §1–§2 跑
+`seam_extract.py` → `seam_build.py`；本步只把已有连接改成四边形表示，
+模型里没有连接会返回 `connections: 0`（`shell_rep.py` 不建连接）。
+脚本默认操作当前已打开的模型；要传 `model` 只能给 `.ansa`/CAD 文件，`base.Open` 不吃 `.nas`。
+
 ```python
 exec(open(r".../ansa-seam-weld/scripts/shell_rep.py", encoding="utf-8").read(), globals())
-PARAMS = {"width": 4.0, "root_shells": "Single Row", "restore_properties": True}
+PARAMS = {"width": 4.0, "root_shells": "Single Row",
+          "restore_properties": True}
 run(PARAMS)
 ```
 
 脚本会自动：设宽度 → 布焊点 → 转单元 → 统计重划/改属性 → 还原板属性 → 列出失败焊缝。
+
+### 5.4 衬套连接
+
+```python
+exec(open(r".../ansa-bushing-connection/scripts/bushing_connection.py", encoding="utf-8").read(), globals())
+RESULT = run({
+    "stage": "all",
+    "rubber": [r"D:/parts/06_nonmetal"],   # 橡胶件目录（或文件清单）
+    "structure": r"D:/out/structure.nas",  # 结构网格模型，stage="all" 必需
+    "mode": "point",                       # "point"（默认，零长度）| "spanning"（真实长度）
+    "k_rad": 1000.0,                       # 径向刚度占位值 N/mm，按橡胶硬度改
+    "work_dir": r"D:/out/bush",
+    "export_nas": r"D:/out/class5_bush.nas",
+})
+```
+
+同轴的多段橡胶件（胶套 + 轴承）会自动合并成一只衬套。板位、孔缘环、跨距都从网格量，
+不用手输；`origin`/`span` 只用于初始搜索。
+
+两种模式**刚度等价**（class5 上解出 165.6 / 9913.9 N/mm，五位数字一致）：
+`spanning` 只是把元件拉长到真实板距、网格落在板中面。除非有非得看全长元件的交付规范，
+否则用 `point`。
 
 ---
 
@@ -214,6 +254,7 @@ run(PARAMS)
 | 中面网格 | 单元数接近 `面积/边长²`；`edge_p50` 与目标差 ~6%；`T=1.0` 的 PSHELL 为 0；`MAT1` 存在；无游离小块 |
 | 螺栓 | 每螺栓 2 RBE2 + 1 CBAR；CBAR 两端节点有效；`PBARL` 的 `DIM1` 在 deck 里非空 |
 | 焊缝 | 连接数量对得上焊道数；每条连接至少两个零件；自由节点 0；RBE2 节点数 ≥ 2；导出的属性材料闭环 |
+| 衬套 | 每衬套 2 RBE2 + 1 CBUSH；`PBUSH` 的 K1..K6 回读非零且顺序为 轴向/径向/径向/扭转/摇摆/摇摆；`point` 与 `spanning` 两种建法解出的位移一致 |
 
 **汇报时把三件事分开说**：连接存在、单元真的生成了、接头工程有效——第三件没有任何自动步骤能断言。
 
