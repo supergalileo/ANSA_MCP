@@ -143,11 +143,16 @@ check and turn every panel into a weld.
 A 1 mm radius is a sheet-metal fillet, not a tube; the floor is 1.5 mm.
 
 Then hand a class folder to the normal pipeline - `parallel_batch.py` accepts  
-any format `base.Open` reads (`.catpart`, `.stp`, `.step`, `.igs`, `.x_t`, `.jt`):
+any format `base.Open` reads (`.catpart`, `.stp`, `.step`, `.igs`, `.x_t`, `.jt`).
+Write the paths absolute: a worker's cwd is its own slice folder, and the shell
+that starts it is that same slice, so `--out out` only works by accident of where
+you happened to run the driver. The driver calls `abspath` on `--src`, `--out`,
+`--mpar`, `--qual` and `--ana-bat` before it builds anything, but the examples stay
+absolute because a copied command must mean the same thing from any cwd:
 
 ```
-python scripts/parallel_batch.py --src out/00_split/01_sheet --out out \
-    --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --workers 4
+python scripts/parallel_batch.py --src E:/proj/out/00_split/01_sheet --out E:/proj/out \
+    --mpar E:/proj/5MM.ansa_mpar --qual E:/proj/5MM.ansa_qual --workers 4
 ```
 
 **The class in `_parts.csv` is a first cut, not a verdict.** The splitter has no  
@@ -219,8 +224,8 @@ crash costs one part instead of a reconnect (`references/field-notes.md` explain
 why the connector cannot survive this):
 
 ```
-python scripts/parallel_batch.py --src <parts> --out <out> \
-    --mpar 5MM.ansa_mpar --qual 5MM.ansa_qual --workers 4
+python scripts/parallel_batch.py --src E:/proj/parts --out E:/proj/out \
+    --mpar E:/proj/5MM.ansa_mpar --qual E:/proj/5MM.ansa_qual --workers 4
 ```
 
 Workers scale roughly linearly until RAM or license slots run out: 6 workers on  
@@ -239,8 +244,10 @@ for 540 parts and 361 `.nas` for 382 shells, **with no error anywhere**.
 
 `ansa64.bat` is resolved at import time: `$ANSA_BAT`, then `$ANSA_HOME`, then the  
 usual BETA install roots, newest folder first. Override with `--ana-bat` when the  
-machine holds several releases - the run is only as good as the version printed  
-by `base.Version`, so check it once per batch.
+machine holds several releases - the run is only as good as the ANSA build, so
+check it once per batch. There is no `base.Version` in 24.1.2 (probed: `dir(base)`
+only has `SetPartVersion` / `UnitConversion`); the version is the `version:  24.1.2,
+compiled: ...` line near the top of each worker's `_driver/wN.out`.
 
 When the batch has finished there is **no ANSA process left**, and  
 `process_folder` cannot run outside ANSA (`base` is imported at module level).  

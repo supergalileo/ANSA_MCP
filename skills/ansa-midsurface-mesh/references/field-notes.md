@@ -66,8 +66,21 @@ Nothing inside the server can fix (3). `scripts/parallel_batch.py` sidesteps the
 whole chain by launching `ansa64.bat -nogui -exec` directly: no connector in the
 path, no 600 s tool limit, and a crash costs one part.
 
-### Three traps in that driver, all hit for real
+### Four traps in that driver, all hit for real
 
+- **A relative `--src` / `--out` kills every worker before ANSA starts.** A worker's
+  cwd is its own slice folder and the generated `.bat` is run from there, so
+  `--out out` produced a runner whose `load_script` was `out/_driver/slices/w1.py`
+  - resolved against `<out>/_driver/slices/rHHMMSS/w1/`, where it does not exist.
+  All workers exited `rc=1` immediately, the driver burned its 3 restarts, and
+  `w1.out` held exactly one line: `'out' is not recognized as an internal or
+  external command`. Nineteen relative paths, one message, 5 minutes of the 95-part
+  run. `--mpar` / `--qual` are the same class and worse: relative values make
+  `process_part.py`'s `os.path.isfile()` false, so the mesh parameters are dropped
+  **and the part still reports `done`**. `main()` now `abspath`s `--src`, `--out`,
+  `--mpar`, `--qual`, `--ana-bat` before building anything; verified by re-running
+  a 5-part and a 2-part smoke with relative paths (both `rc=0`, generated PARAMS
+  contain 0 relative entries, 2/2 sheet parts still delivered `.nas`).
 - **A dead ANSA leaves the cmd.exe wrapper alive.** Watching the process for exit
   reports "still running" forever: four workers sat idle for 11 minutes while
   everything looked healthy. The only reliable signal is the progress file going

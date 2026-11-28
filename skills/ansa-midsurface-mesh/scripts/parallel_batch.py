@@ -29,7 +29,8 @@ be appended to, never rewritten, or the summary loses every earlier phase.
 Layout it creates under `--out`:
     <out>/                 shared .ansa / .nas destination
     <out>/_driver/slices/  per-run, per-worker hardlink folders
-    <out>/_driver/wN.py    generated runner for worker N
+    <out>/_driver/slices/wN.py    generated runner for worker N (and its .bat)
+    <out>/_driver/slices/rHHMMSS/wN/  that run's hardlinked input slice
     <out>/_driver/wN.jsonl per-worker progress
     <out>/_driver/wN.out   ANSA's own stdout for that worker
     <out>/_driver/supervise.log
@@ -257,9 +258,18 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="cap parts per worker")
     args = ap.parse_args()
 
-    src, out = args.src, args.out
-    if not args.ansa_bat or not os.path.isfile(args.ansa_bat):
-        print(args.ansa_bat and "ansa64.bat not found: %s" % args.ansa_bat
+    # Every path below is handed to a worker whose cwd is that worker's slice
+    # folder, and the generated .bat is executed by cmd.exe from there too, so a
+    # relative --src/--out (or --mpar/--qual) silently resolves against the slice:
+    # the runner dies with rc=1 before ANSA starts, and mesh parameters fail
+    # `isfile()` and get dropped while the part still reports success. Absolutise
+    # everything once, here.
+    src, out = os.path.abspath(args.src), os.path.abspath(args.out)
+    mpar = os.path.abspath(args.mpar) if args.mpar else ""
+    qual = os.path.abspath(args.qual) if args.qual else ""
+    ansa_bat = os.path.abspath(args.ansa_bat) if args.ansa_bat else ""
+    if not ansa_bat or not os.path.isfile(ansa_bat):
+        print(ansa_bat and "ansa64.bat not found: %s" % ansa_bat
               or _ANSA_LOOKUP_ERROR)
         print("fix: set ANSA_BAT / ANSA_HOME, or pass --ana-bat <path>")
         return 2
@@ -305,15 +315,16 @@ def main():
                   "stems_file": stems_path.replace("\\", "/"),
                   "progress": os.path.join(drv, w + ".jsonl").replace("\\", "/")}
         script_path = os.path.join(slices, w + ".py")
-        write_runner(script_path, wparam, args.mpar, args.qual, args.engine,
+        write_runner(script_path, wparam, mpar, qual, args.engine,
                      bool(args.nas), HERE)
         procs[w] = {"bucket": bucket, "script": script_path, "dir": wdir,
                     "progress": wparam["progress"], "restarts": 0,
                     "last_n": 0, "last_t": time.time(),
                     "popen": launch(script_path, wdir, os.path.join(drv, w + ".out"),
-                                    args.ansa_bat)}
+                                    ansa_bat)}
         log("%s launched with %d parts" % (w, len(bucket)), slog)
 
+    gave_up = []
     while procs:
         time.sleep(5)
         for w in list(procs):
@@ -337,6 +348,7 @@ def main():
             if info["restarts"] >= args.max_restarts:
                 log("%s gave up after %d restarts, %d parts left"
                     % (w, info["restarts"], len(left)), slog)
+                gave_up.append(w)
                 del procs[w]
                 continue
             info["restarts"] += 1
@@ -353,7 +365,7 @@ def main():
             info["bucket"] = left
             info["last_n"], info["last_t"] = 0, time.time()
             info["popen"] = launch(info["script"], info["dir"],
-                                   os.path.join(drv, w + ".out"), args.ansa_bat)
+                                   os.path.join(drv, w + ".out"), ansa_bat)
 
     # Append, never rewrite: this file also holds everything an earlier
     # MCP-driven phase wrote, and a rewrite silently costs the whole summary.
@@ -378,6 +390,13 @@ def main():
     log("appended %d progress records; worker statuses %s"
         % (len(merged), dict(counts)), slog)
     log("now run process_folder with limit=0 on %s to write the summary" % out, slog)
+    # A worker that exhausted its restarts delivered nothing, and a driver that only
+    # ever launched workers which died instantly still used to exit 0 - CI and any
+    # wrapper script read that as success. Parts that ran and were classified
+    # (skin_failed included) are a real verdict and keep exit 0.
+    if gave_up:
+        log("%d worker(s) gave up: %s -> exit 2" % (len(gave_up), ", ".join(gave_up)), slog)
+        return 2
     return 0
 
 

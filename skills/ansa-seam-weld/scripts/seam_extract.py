@@ -3,7 +3,7 @@
 Runs INSIDE ANSA (needs the geometry kernel):
 
     exec(open(r"<this file>", encoding="utf-8").read(), globals())
-    lines = extract(TPARAMS)
+    lines = extract(PARAMS)
 
 Why one file at a time: `base.Open` on a CAD file replaces the whole database,
 so a bead is opened, measured, and discarded before the next one. What survives
@@ -108,10 +108,21 @@ def extract(params):
     return {"rows": rows, "n_ok": len(ok), "n_total": len(rows)}
 
 
-TPARAMS = {
-    "folder": r"D:/proj/beads",
-    "out_json": r"D:/out/weld/_seam_lines.json",
-    "n_pts": 15,
-}
+# There are no built-in paths: every input belongs to the case being welded. A
+# bare exec() used to run the reference model's folders and report success, so an
+# agent with no context silently read the wrong files. Demand PARAMS instead - see
+# SKILL.md, "Passing parameters".
+_SEAM_REQUIRED = ("folder",)
 if globals().get("_SEAM_AUTORUN", True):
-    RESULT = extract(TPARAMS)
+    _SEAM_PARAMS = globals().get("PARAMS")
+    if not _SEAM_PARAMS:
+        raise RuntimeError(
+            "MCP_PRECONDITION: seam_extract: PARAMS is empty - set PARAMS = {...} "
+            "before exec(), or set _SEAM_AUTORUN = False and call "
+            "extract(PARAMS) yourself. Required keys: "
+            + (", ".join(_SEAM_REQUIRED) or "none"))
+    _SEAM_MISSING = [k for k in _SEAM_REQUIRED if _SEAM_PARAMS.get(k) in (None, "")]
+    if _SEAM_MISSING:
+        raise RuntimeError("MCP_PRECONDITION: seam_extract: PARAMS is missing "
+                           + ", ".join(_SEAM_MISSING))
+    RESULT = extract(_SEAM_PARAMS)

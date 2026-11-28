@@ -108,9 +108,19 @@ def main():
     ap.add_argument("--only", default="", help="JSON list of file names to run")
     args = ap.parse_args()
 
-    os.makedirs(os.path.join(args.out, "_driver"), exist_ok=True)
-    logpath = os.path.join(args.out, "_driver", "casting_batch.log")
-    progress = os.path.join(args.out, "_casting_progress.jsonl")
+    # Same trap as parallel_batch: the per-part .bat runs with cwd = <out>/_driver,
+    # so a relative --src/--out made the generated runner unreachable and every part
+    # exited "died" in 0.0 s (12/12 on a 12-part rescue set). Absolutise first.
+    src = os.path.abspath(args.src)
+    out = os.path.abspath(args.out)
+    mpar = os.path.abspath(args.mpar) if args.mpar else ""
+    qual = os.path.abspath(args.qual) if args.qual else ""
+    ansa_bat = os.path.abspath(args.ansa_bat) if args.ansa_bat else ""
+    only = os.path.abspath(args.only) if args.only else ""
+
+    os.makedirs(os.path.join(out, "_driver"), exist_ok=True)
+    logpath = os.path.join(out, "_driver", "casting_batch.log")
+    progress = os.path.join(out, "_casting_progress.jsonl")
     done = set()
     if os.path.isfile(progress):
         for line in open(progress, encoding="utf-8", errors="ignore"):
@@ -119,18 +129,20 @@ def main():
             except Exception:
                 pass
 
-    files = sorted(os.path.join(args.src, f) for f in os.listdir(args.src)
+    files = sorted(os.path.join(src, f) for f in os.listdir(src)
                    if f.lower().endswith(".catpart"))
-    if args.only:
-        keep = set(json.load(open(args.only, encoding="utf-8")))
+    if only:
+        # utf-8-sig: a list exported from Excel / PowerShell on Windows carries a BOM,
+        # and plain utf-8 json.load dies on it with "Unexpected UTF-8 BOM".
+        keep = set(json.load(open(only, encoding="utf-8-sig")))
         files = [f for f in files if os.path.basename(f) in keep]
     todo = [f for f in files if os.path.basename(f) not in done]
     log("source %d, already recorded %d, todo %d" % (len(files), len(files) - len(todo),
                                                      len(todo)), logpath)
-    log("ansa: %s" % args.ansa_bat, logpath)
+    log("ansa: %s" % ansa_bat, logpath)
 
-    base_params = {"out_dir": args.out.replace("\\", "/"),
-                   "engine": "mesh", "mpar": args.mpar, "qual": args.qual,
+    base_params = {"out_dir": out.replace("\\", "/"),
+                   "engine": "mesh", "mpar": mpar, "qual": qual,
                    "casting": args.casting,
                    "thickness_tolerance": args.tol,
                    "min_face_rate": args.min_face_rate,
@@ -145,7 +157,7 @@ def main():
         name = os.path.basename(cat)
         tag = os.path.splitext(name)[0]
         before = os.path.getsize(progress) if os.path.isfile(progress) else 0
-        res, note, secs = run_one(cat, base_params, args.out, args.ansa_bat,
+        res, note, secs = run_one(cat, base_params, out, ansa_bat,
                                   args.timeout, tag)
         rec = None
         if os.path.isfile(progress) and os.path.getsize(progress) > before:
@@ -178,6 +190,14 @@ def main():
     for r in added:
         counts[r.get("status")] = counts.get(r.get("status"), 0) + 1
     log("per-part processes: %s" % counts, logpath)
+    # `died` / `timeout` mean the process never produced a result at all - that is a
+    # driver/launch failure, not a verdict on the part, so it must not exit 0. A part
+    # that ran and came back `casting_failed` is a real result and still exits 0.
+    runner_failures = counts.get("died", 0) + counts.get("timeout", 0)
+    if runner_failures:
+        log("%d of %d parts never produced a result (died/timeout) -> exit 2"
+            % (runner_failures, len(todo)), logpath)
+        return 2
     return 0
 
 

@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from ansa_iap import IapError, IapOutcomeUnknown, ScriptResult  # noqa: E402
 from ansa_ledger import (  # noqa: E402
     FAILED,
+    PARTIAL,
     SUCCESS,
     UNKNOWN,
     LedgerFull,
@@ -84,6 +85,19 @@ def test_ledger() -> None:
         check("failed op may be retried",
               led.reserve("op_c", "ansa_mesh", fp) is None)
 
+        # A script that raised *after* the model changed is not a clean failure:
+        # replaying it would apply the same edit twice. See ansa_ledger.PARTIAL.
+        led.reserve("op_d", "ansa_mesh", fp)
+        led.finish("op_d", PARTIAL, error="ValueError: boom",
+                   extra={"delta": {"SHELL": 12}})
+        try:
+            led.reserve("op_d", "ansa_mesh", fp)
+            check("partial op is refused", False)
+        except OperationOutcomeUnknown as exc:
+            check("partial op is refused", True)
+            check("partial refusal shows the delta it applied",
+                  "SHELL +12" in str(exc), str(exc)[:90])
+
         reloaded = OperationLedger(path)
         check("records survive a server restart", reloaded.get("op_a")["status"] == "success")
 
@@ -112,7 +126,13 @@ class FakeClient:
         if self.behaviour == "dead":
             raise IapError("cannot connect to ANSA")
         res = ScriptResult(result_code=0, exec_details=0, elapsed=0.5)
-        if self.behaviour == "script_error":
+        if self.behaviour == "precondition":
+            # The script refused its own input before touching the model, the
+            # way skills now report a missing PARAMS key (server: MCP_PRECONDITION).
+            res.payload = {"ok": "0", "stdout": "",
+                           "error": "MCP_PRECONDITION: PARAMS is empty - set "
+                                    "PARAMS = {...} before exec()"}
+        elif self.behaviour == "script_error":
             res.payload = {"ok": "0", "error": "ValueError: boom", "stdout": ""}
         else:
             res.payload = {"ok": "1", "result": "{}", "stdout": "", "elapsed": "0.50"}
@@ -167,6 +187,51 @@ def test_session() -> None:
     sess.client = FakeClient("script_error")
     bad = sess.run("4", mutating=True, measure=False)
     check("script exception is SCRIPT_ERROR", bad["status"] == "SCRIPT_ERROR")
+    check("unmeasured script error is not called partial", bad.get("partial") is False)
+
+    # A script that raised after the model had already changed: the write is
+    # PARTIAL, and the same id must not be reused - a replay would apply it twice.
+    sess.client = FakeClient("script_error")
+    calls = {"n": 0}
+
+    def changing_model():
+        calls["n"] += 1
+        return {"SHELL": 100} if calls["n"] == 1 else {"SHELL": 112}
+
+    sess._counts = changing_model
+    half = sess.run("6", mutating=True, measure=True)
+    check("script error after a change is flagged partial", half.get("partial") is True)
+    check("partial write keeps its delta", half.get("delta") == {"SHELL": 12},
+          str(half.get("delta")))
+    blocked2 = sess.run("6", mutating=True, measure=True,
+                        operation_id=half["operation_id"])
+    check("a partial write cannot be retried", blocked2["status"] == "OUTCOME_UNKNOWN")
+    check("partial refusal happens at the ledger",
+          blocked2.get("phase") == "ledger")
+
+    # A script that refused its own input before touching the model is a clean
+    # failure even when the census moved: MCP_PRECONDITION wins over the delta,
+    # the ledger stays FAILED, and the same id may be retried.
+    sess.client = FakeClient("precondition")
+    calls2 = {"n": 0}
+
+    def drifting_model():
+        calls2["n"] += 1
+        return {"SHELL": 10} if calls2["n"] == 1 else {"SHELL": 20}
+
+    sess._counts = drifting_model
+    refused = sess.run("7", mutating=True, measure=True)
+    check("precondition refusal is SCRIPT_ERROR", refused["status"] == "SCRIPT_ERROR")
+    check("precondition refusal is not partial", refused.get("partial") is False)
+    check("precondition refusal is flagged precondition",
+          refused.get("precondition") is True)
+    check("precondition refusal leaves the ledger FAILED",
+          srv.LEDGER.get(refused["operation_id"])["status"] == FAILED,
+          str(srv.LEDGER.get(refused["operation_id"])))
+    again = sess.run("7", mutating=True, measure=True,
+                     operation_id=refused["operation_id"])
+    check("a precondition refusal may be retried under the same id",
+          again["status"] != "OUTCOME_UNKNOWN", str(again.get("status")))
 
     # A read-only call must never touch the ledger.
     before = srv.LEDGER.size()
@@ -202,7 +267,7 @@ def test_formatter() -> None:
 
     ok = srv._fmt({"ok": True, "status": "OK", "operation_id": "op_y",
                    "elapsed": "1.0", "delta": {"SHELL": 6341}, "mutating": True})
-    check("evidence line separates layers", "engineering=unverified" in ok)
+    check("evidence line separates layers", "engineering=NOT CHECKED" in ok)
     check("delta is shown", "SHELL +6341" in ok)
 
     ro = srv._fmt({"ok": True, "status": "OK", "operation_id": "op_z",

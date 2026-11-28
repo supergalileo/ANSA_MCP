@@ -475,11 +475,27 @@ def run(params):
         cols = ["part", "code", "status", "in_faces", "mid_faces", "face_rate",
                 "perim_rate", "shells", "T_median", "T_p2", "T_p98", "spread",
                 "seconds", "note", "error"]
+        header = ["零件", "编号", "状态", "输入面数", "中面数", "面成功率",
+                  "周界成功率", "壳单元", "T中位数", "T_p2", "T_p98",
+                  "离散度", "耗时s", "说明", "错误"]
+        # `casting_batch.py` runs one ANSA process per part, so every process sees a
+        # single-row `rows`. Opening "w" therefore left 抢救清单.csv with only the
+        # last part (12 rows in, 1 row out, no error). Merge instead: keep every row
+        # this process did not just process, then append its own.
+        fresh = set(r.get("part", "") for r in rows)
+        old = []
+        if os.path.isfile(csv_path):
+            try:
+                with open(csv_path, encoding="utf-8-sig", newline="") as fh:
+                    old = [row for row in csv.reader(fh)
+                           if row and row[0] != header[0] and row[0] not in fresh]
+            except Exception:
+                old = []
         with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["零件", "编号", "状态", "输入面数", "中面数", "面成功率",
-                        "周界成功率", "壳单元", "T中位数", "T_p2", "T_p98",
-                        "离散度", "耗时s", "说明", "错误"])
+            w.writerow(header)
+            for row in old:
+                w.writerow(row)
             for r in rows:
                 w.writerow([r.get(k, "") for k in cols])
     return {"ok": by.get("error", 0) == 0, "n_total": len(rows), "by_status": by,

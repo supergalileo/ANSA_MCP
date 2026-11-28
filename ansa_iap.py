@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import socket
 import struct
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -194,13 +195,26 @@ class ScriptResult:
 
 # ------------------------------------------------------------------ client ---
 class IapClient:
-    """One TCP connection to an ANSA process running in listener mode."""
+    """One TCP connection to an ANSA process running in listener mode.
+
+    Threading
+    ---------
+    IAP is strictly request/reply on a single TCP stream: one frame may be in
+    flight at a time. Two threads writing into the same socket interleave their
+    frames, and whichever thread wakes first consumes the other's reply - a
+    *successful* write then gets reported as a script error, or a stale reply is
+    accepted as the answer to a new call. So every exchange holds ``_io``, and
+    ``_recv_message`` checks that the reply carries the transaction id that was
+    sent. A mismatch is ``OUTCOME_UNKNOWN``, never a retry.
+    """
 
     def __init__(self, port: int, host: str = "127.0.0.1", timeout: float = 300.0):
         self.port = port
         self.host = host
         self.timeout = timeout
         self._txn = 0
+        self._io = threading.Lock()
+        self._active_timeout = timeout
         try:
             self._sock = socket.create_connection((host, port), timeout=min(timeout, 30.0))
         except OSError as exc:
@@ -208,14 +222,26 @@ class IapClient:
         self._sock.settimeout(timeout)
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
+    def busy(self) -> bool:
+        """True while another thread holds the socket for a request/reply pair.
+
+        Callers that only want to know whether ANSA *is there* must not inject a
+        probe frame while this is true - the connection is fine, it is occupied.
+        """
+        if self._io.acquire(blocking=False):
+            self._io.release()
+            return False
+        return True
+
     # -- transport ---------------------------------------------------------
     def _next_txn(self) -> int:
         self._txn += 1
         return self._txn
 
-    def _send(self, service: int, code: int, ies: Iterable[tuple[int, Any]]) -> None:
+    def _send(self, service: int, code: int, ies: Iterable[tuple[int, Any]],
+              txn: int) -> None:
         payload = b"".join(_pack_ie(t, v) for t, v in ies)
-        msg = _pack_header(service, code, self._next_txn(), 16 + len(payload)) + payload
+        msg = _pack_header(service, code, txn, 16 + len(payload)) + payload
         try:
             self._sock.sendall(msg)
         except OSError as exc:
@@ -228,7 +254,7 @@ class IapClient:
                 chunk = self._sock.recv(n - len(buf))
             except socket.timeout as exc:
                 raise IapOutcomeUnknown(
-                    f"timed out waiting for ANSA after {self.timeout:.0f}s "
+                    f"timed out waiting for ANSA after {self._active_timeout:.0f}s "
                     "(the script may still be running inside ANSA)"
                 ) from exc
             if not chunk:
@@ -238,35 +264,58 @@ class IapClient:
             buf += chunk
         return bytes(buf)
 
-    def _recv_message(self) -> list[tuple[int, Any]]:
+    def _recv_message(self, expected_txn: int | None = None) -> list[tuple[int, Any]]:
         header = self._recv_exact(16)
-        _ver, _flags, _service, _code, _txn, total_len = struct.unpack(">BBHLLL", header)
+        _ver, _flags, _service, _code, txn, total_len = struct.unpack(">BBHLLL", header)
         if total_len < 16 or total_len > 512 * 1024 * 1024:
-            raise IapError(f"implausible message length {total_len}")
+            # The frame started arriving, so ANSA did something: the script may
+            # already have run. Never let this be retried as "nothing happened".
+            raise IapOutcomeUnknown(
+                f"implausible message length {total_len} in reply txn {txn}"
+            )
         body = self._recv_exact(total_len - 16)
+        if expected_txn is not None and txn != expected_txn:
+            # A reply that does not answer our request is worse than no reply:
+            # wiring it into the result would record someone else's outcome.
+            raise IapOutcomeUnknown(
+                f"reply transaction {txn} does not match request {expected_txn}; "
+                "the connection is out of sync"
+            )
         return _decode_ies(body)
 
     # -- protocol ----------------------------------------------------------
     def hello(self) -> int | None:
-        self._send(SVC_COMMON, MSG_HELLO, [
-            (TAG_PROCESS_ID, os.getpid()),
-            (TAG_SUPPORTED_SERVICE, 0x00010002),
-        ])
-        ies = dict(self._recv_message())
-        return ies.get(TAG_RESULT_CODE)
+        with self._io:
+            txn = self._next_txn()
+            self._send(SVC_COMMON, MSG_HELLO, [
+                (TAG_PROCESS_ID, os.getpid()),
+                (TAG_SUPPORTED_SERVICE, 0x00010002),
+            ], txn)
+            return dict(self._recv_message(txn)).get(TAG_RESULT_CODE)
 
     def execute(self, script_text: str, entry: str | None = None,
                 keep_database: bool = True, timeout: float | None = None) -> ScriptResult:
         t0 = time.time()
-        if timeout is not None:
-            self._sock.settimeout(timeout)
-        ies: list[tuple[int, Any]] = [(TAG_SCRIPT_STRING, script_text)]
-        if entry:
-            ies.append((TAG_ENTRY_METHOD, entry))
-        ies.append((TAG_PRE_EXECUTION_DB_ACTION,
-                    PRE_EXEC_KEEP_DATABASE if keep_database else PRE_EXEC_RESET_DATABASE))
-        self._send(SVC_SCRIPT_EXECUTION, MSG_EXECUTE_SCRIPT, ies)
-        decoded = dict(self._recv_message())
+        with self._io:
+            if timeout is not None:
+                self._sock.settimeout(timeout)
+                self._active_timeout = timeout
+            try:
+                txn = self._next_txn()
+                ies: list[tuple[int, Any]] = [(TAG_SCRIPT_STRING, script_text)]
+                if entry:
+                    ies.append((TAG_ENTRY_METHOD, entry))
+                ies.append((TAG_PRE_EXECUTION_DB_ACTION,
+                            PRE_EXEC_KEEP_DATABASE if keep_database else PRE_EXEC_RESET_DATABASE))
+                self._send(SVC_SCRIPT_EXECUTION, MSG_EXECUTE_SCRIPT, ies, txn)
+                decoded = dict(self._recv_message(txn))
+            finally:
+                if timeout is not None:
+                    try:
+                        self._sock.settimeout(self.timeout)
+                    except OSError:
+                        pass
+                    self._active_timeout = self.timeout
         res = ScriptResult(
             result_code=decoded.get(TAG_RESULT_CODE),
             exec_details=decoded.get(TAG_SCRIPT_EXECUTION_DETAILS),
@@ -280,13 +329,21 @@ class IapClient:
         return res
 
     def goodbye(self, keep_listening: bool = True) -> int | None:
-        self._send(SVC_COMMON, MSG_GOODBYE, [
-            (TAG_POST_CONNECTION_ACTION, POST_KEEP_LISTENING if keep_listening else POST_SHUT_DOWN),
-        ])
-        ies = dict(self._recv_message())
-        return ies.get(TAG_RESULT_CODE)
+        with self._io:
+            txn = self._next_txn()
+            self._send(SVC_COMMON, MSG_GOODBYE, [
+                (TAG_POST_CONNECTION_ACTION, POST_KEEP_LISTENING if keep_listening else POST_SHUT_DOWN),
+            ], txn)
+            return dict(self._recv_message(txn)).get(TAG_RESULT_CODE)
 
     def close(self) -> None:
+        """Close the socket. Deliberately does not take ``_io``.
+
+        Closing pulls a blocked reader out of ``recv`` immediately, which is
+        what a caller who gave up on this connection wants; waiting for the
+        lock would make "close the socket" wait for the very exchange it is
+        trying to abort.
+        """
         try:
             self._sock.close()
         except OSError:

@@ -174,13 +174,21 @@ def run(params):
     return report
 
 
-TPARAMS = {
-    "work_dir": r"D:/out/weld",
-    "diameter": 4.0,
-    "delete_rbe2": True,
-    "export_nas": r"D:/out/weld/seam_welded_bar.nas",
-    "save_ansa": "",
-    "out_json": r"D:/out/weld/_rbe2_to_bar.json",
-}
+# There are no built-in paths: every input belongs to the case being welded. A
+# bare exec() used to run the reference model's folders and report success, so an
+# agent with no context silently read the wrong files. Demand PARAMS instead - see
+# SKILL.md, "Passing parameters".
+_SEAM_REQUIRED = ("work_dir",)
 if globals().get("_SEAM_AUTORUN", True):
-    RESULT = run(TPARAMS)
+    _SEAM_PARAMS = globals().get("PARAMS")
+    if not _SEAM_PARAMS:
+        raise RuntimeError(
+            "MCP_PRECONDITION: rbe2_to_bar: PARAMS is empty - set PARAMS = {...} "
+            "before exec(), or set _SEAM_AUTORUN = False and call run(PARAMS) "
+            "yourself. Required keys: "
+            + (", ".join(_SEAM_REQUIRED) or "none"))
+    _SEAM_MISSING = [k for k in _SEAM_REQUIRED if _SEAM_PARAMS.get(k) in (None, "")]
+    if _SEAM_MISSING:
+        raise RuntimeError("MCP_PRECONDITION: rbe2_to_bar: PARAMS is missing "
+                           + ", ".join(_SEAM_MISSING))
+    RESULT = run(_SEAM_PARAMS)

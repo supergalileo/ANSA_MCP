@@ -19,6 +19,10 @@ recorded state       what a retry with the same id does
 ``success``          returns the stored summary, ANSA is not touched
 ``pending``          refuses with OUTCOME_UNKNOWN, ANSA is not touched
 ``unknown``          refuses with OUTCOME_UNKNOWN, ANSA is not touched
+``partial``          refuses with OUTCOME_UNKNOWN: the script ran and the
+                     entity counts prove the model *did* change, so a blind
+                     re-run would apply the change twice. Read the model back
+                     with ``ansa_diff``, then redo it under a new id.
 ``failed``           allowed to run again (nothing was confirmed as applied)
 different params     refuses: the id already belongs to another operation
 ===================  =======================================================
@@ -46,6 +50,7 @@ PENDING = "pending"
 SUCCESS = "success"
 FAILED = "failed"
 UNKNOWN = "unknown"
+PARTIAL = "partial"
 
 
 class LedgerError(RuntimeError):
@@ -124,7 +129,7 @@ class OperationLedger:
             status = rec.get("status")
             updated = float(rec.get("updated_at") or rec.get("created_at") or 0)
             age = now - updated
-            if status in (PENDING, SUCCESS, UNKNOWN):
+            if status in (PENDING, SUCCESS, UNKNOWN, PARTIAL):
                 if age > self.max_age:
                     drop.append(op_id)
             elif status == FAILED and age > FAILED_RETENTION_SECONDS:
@@ -155,6 +160,16 @@ class OperationLedger:
             status = record.get("status")
             if status == SUCCESS:
                 return record
+            if status == PARTIAL:
+                delta = (record.get("extra") or {}).get("delta") or {}
+                seen = ", ".join(f"{k} {v:+d}" for k, v in sorted(delta.items())) \
+                    or "unknown"
+                raise OperationOutcomeUnknown(
+                    f"operation_id `{operation_id}` is recorded as `partial`: the "
+                    f"script raised, but the model had already changed ({seen}). "
+                    "A re-run would apply that change a second time. Inspect it "
+                    "with `ansa_diff`, then redo the work under a NEW id."
+                )
             if status in (PENDING, UNKNOWN):
                 raise OperationOutcomeUnknown(
                     f"operation_id `{operation_id}` is recorded as `{status}`: "
@@ -207,7 +222,7 @@ class OperationLedger:
 
     def pending_count(self) -> int:
         return sum(1 for r in self._records.values()
-                   if r.get("status") in (PENDING, UNKNOWN))
+                   if r.get("status") in (PENDING, UNKNOWN, PARTIAL))
 
     def size(self) -> int:
         return len(self._records)

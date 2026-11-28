@@ -46,6 +46,9 @@ dist/
 *.jt
 *.sldprt
 
+# 本地测试几何（真实车体数据，不入库）
+gemo/
+
 # Editor / OS
 .vscode/
 .idea/

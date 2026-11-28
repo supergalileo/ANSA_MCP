@@ -48,6 +48,7 @@ from mcp.server.fastmcp import FastMCP
 from ansa_iap import IapClient, IapError, IapOutcomeUnknown, connect_with_retry
 from ansa_ledger import (
     FAILED,
+    PARTIAL,
     SUCCESS,
     UNKNOWN,
     LedgerError,
@@ -85,6 +86,12 @@ _STEP_SEQ = itertools.count(1)
 # Entity types cheap enough to count around every mutating call.
 COUNT_TYPES = ("GRID", "SHELL", "SOLID", "BEAM", "PART",
                "__PROPERTIES__", "__MATERIALS__")
+
+# A skill can refuse its own arguments before touching the model by raising an
+# exception whose message starts with this marker. That turns "script raised"
+# into "nothing was executed", which is safe to retry - the server cannot
+# otherwise tell a validation failure from a half-applied batch.
+PRECONDITION_MARKER = "MCP_PRECONDITION:"
 
 
 DECK_OUTPUT = {
@@ -419,6 +426,12 @@ class AnsaSession:
     def _alive(self) -> bool:
         if self.client is None:
             return False
+        if self.client.busy():
+            # ANSA is reachable but the socket is held by a request/reply pair
+            # (a long job). Probing here would inject a second frame into that
+            # exchange and hand both callers the wrong reply, so report "alive"
+            # and skip the probe: busy is not dead.
+            return True
         try:
             res = self.client.execute("def main():\n    return {'p': '1'}\n",
                                       "main", timeout=20.0)
@@ -591,7 +604,7 @@ class AnsaSession:
             "operation_id": op_id,
             "status": status,
             "mutating": bool(mutating),
-            "delta": delta or {},
+            "delta": delta,
             "at": time.strftime("%H:%M:%S"),
             "note": note,
         })
@@ -672,7 +685,20 @@ class AnsaSession:
         after = self._counts() if measure else None
         delta = _delta(before, after)
         payload = res.payload
+        if res.result_code is None:
+            # ANSA answered but named no result code: the script may well have
+            # run. Calling this SCRIPT_ERROR would file a possibly-applied
+            # change as a clean failure and let it run a second time.
+            return self._unknown(
+                IapOutcomeUnknown("ANSA answered without a result code "
+                                  f"({res.describe()}); the script may have run"),
+                op_id, tool, mutating, record)
         ok = bool(res.ok and payload.get("ok") == "1")
+        error_text = payload.get("error") or res.describe()
+        precondition = PRECONDITION_MARKER in (payload.get("error") or "")
+        # Proven partial application: the script raised, but the census shows
+        # the model already changed. A retry must not be allowed to redo it.
+        partial = bool(mutating and not ok and not precondition and delta)
 
         out: dict[str, Any] = {
             "ok": ok,
@@ -685,12 +711,14 @@ class AnsaSession:
             "delta": delta,
             "mutating": mutating,
             "measured": measure,
+            "partial": partial,
+            "precondition": precondition,
         }
         if measure:
             out["counts_before"] = before
             out["counts_after"] = after
         if not ok:
-            out["error"] = payload.get("error") or res.describe()
+            out["error"] = error_text
             out["iap"] = res.describe()
 
         if mutating:
@@ -698,9 +726,13 @@ class AnsaSession:
                 summary = (payload.get("result") or payload.get("stdout") or "")[:4000]
                 LEDGER.finish(op_id, SUCCESS, summary=summary,
                               elapsed=res.elapsed, extra={"delta": delta})
+            elif partial:
+                LEDGER.finish(op_id, PARTIAL, error=out.get("error", ""),
+                              elapsed=res.elapsed, extra={"delta": delta})
             else:
-                # A raised script is a clean failure only when ANSA itself
-                # reported it; the transport delivered a real answer.
+                # Either ANSA itself refused to run the script, or the script
+                # declared (MCP_PRECONDITION) that it stopped before touching
+                # the model. Both are clean failures: nothing was applied.
                 LEDGER.finish(op_id, FAILED, error=out.get("error", ""),
                               elapsed=res.elapsed, extra={"delta": delta})
 
@@ -791,9 +823,11 @@ class AnsaSession:
             return info
 
     def status(self) -> dict:
+        busy = bool(self.client is not None and self.client.busy())
         alive = self.client is not None and self._alive()
         return {
             "connected": alive,
+            "busy": busy,
             "port": self.port,
             "mode": self.mode,
             "pid": self.ansa_pid,
@@ -810,15 +844,21 @@ SESSION = AnsaSession()
 
 # ------------------------------------------------------------ result format ---
 def _evidence(res: dict) -> str:
-    """One line that keeps three kinds of evidence apart.
+    """One line that keeps four kinds of evidence apart.
 
     "The API did not raise" says nothing about whether the model is right, so
-    the transport result, the script result and the observed model change are
-    always reported separately.
+    the transport result, the script result, the observed model change and the
+    engineering check are always reported separately. The last layer is NOT
+    CHECKED until `ansa_verify` / `ansa_diff` has actually run - claiming
+    "unverified" for something nobody looked at reads like a pass.
     """
     status = res.get("status", "")
+    phase = res.get("phase", "")
     if status == "OUTCOME_UNKNOWN":
-        transport, script = "sent, no reply", "unknown"
+        if phase == "ledger":
+            transport, script = "not used", "not executed"
+        else:
+            transport, script = "sent, no reply", "unknown"
     elif status == "TRANSPORT_FAILED":
         transport, script = "failed before send", "not executed"
     elif status in ("REFUSED", "REPLAYED"):
@@ -828,21 +868,43 @@ def _evidence(res: dict) -> str:
     else:
         transport, script = "ok", "raised"
 
-    if res.get("mutating"):
-        if res.get("measured") is False:
-            model = "not measured for this call"
-        else:
-            model = _fmt_delta(res.get("delta") or {})
-    else:
+    if phase == "ledger":
+        model = "not changed (refused by the ledger before anything was sent)"
+    elif status == "REFUSED":
+        model = "not changed (refused before anything was sent)"
+    elif status == "REPLAYED":
+        model = "not changed (replayed from the ledger)"
+    elif not res.get("mutating"):
         model = "not tracked (call declared read-only)"
+    elif res.get("measured") is False:
+        model = "not measured for this call"
+    else:
+        model = _fmt_delta(res.get("delta"))
 
     return (f"evidence: transport={transport} · script={script} · "
-            f"model={model} · engineering=unverified")
+            f"model={model} · engineering=NOT CHECKED")
 
 
 def _fmt(res: dict) -> str:
     status = res.get("status", "")
     op = res.get("operation_id")
+
+    if status == "OUTCOME_UNKNOWN" and res.get("phase") == "ledger":
+        # Refused before anything was sent: saying "ANSA may have changed the
+        # model" here would be a lie, and it would push the agent into a
+        # needless model inspection.
+        return "\n".join([
+            "**refused - nothing was sent to ANSA**",
+            "",
+            res.get("error", ""),
+            "",
+            f"- operation_id: `{op}`",
+            "- This id is already recorded as unresolved, so the server will not "
+            "run it again. Read the model back if you have not already; then "
+            "either finish the work under a NEW operation_id, or stop here.",
+            "",
+            _evidence(res),
+        ])
 
     if status == "OUTCOME_UNKNOWN":
         return "\n".join([
@@ -882,13 +944,28 @@ def _fmt(res: dict) -> str:
 
     parts: list[str] = []
     if not res.get("ok"):
-        parts.append("**ANSA script raised an error**")
+        if res.get("partial"):
+            parts.append("**the script raised AFTER changing the model**")
+            parts.append(f"- already applied: `{_fmt_delta(res.get('delta'))}`")
+            if op:
+                parts.append(f"- `{op}` is recorded as `partial`: re-running it is "
+                             "refused. Look at `ansa_diff` first, then redo the "
+                             "work under a new operation_id.")
+        elif res.get("precondition"):
+            parts.append("**the script refused its inputs - the model was not touched**")
+        else:
+            parts.append("**ANSA script raised an error**")
         if (res.get("stdout") or "").strip():
             parts.append("output before the failure:\n```\n" + res["stdout"].rstrip() + "\n```")
         parts.append("```\n" + (res.get("error") or "unknown error").strip() + "\n```")
         iap = res.get("iap")
         if iap and iap != "result=success":
             parts.append(f"transport: `{iap}`")
+        if res.get("mutating") and res.get("measured") is not False \
+                and res.get("delta") is None:
+            parts.append("- the entity census failed, so **it is not known whether "
+                         "the model changed**. Read it back (`ansa_model_info`) "
+                         "before deciding what to do.")
     else:
         head = f"ok · {res.get('elapsed', '?')}s"
         if op:
@@ -958,10 +1035,16 @@ def _strict_bool(value: Any, name: str) -> tuple[bool | None, str]:
     return None, f"`{name}` must be true or false, got {type(value).__name__} {value!r}"
 
 
-def _delta(before: dict | None, after: dict | None) -> dict[str, int]:
-    """Per-type entity count difference, skipping types we could not read."""
+def _delta(before: dict | None, after: dict | None) -> dict[str, int] | None:
+    """Per-type entity count difference, or ``None`` when a census failed.
+
+    ``{}`` means "measured, nothing changed". ``None`` means "could not
+    measure", and the two must never collapse: reporting a failed census as
+    "unchanged" is a false claim of evidence, and it is exactly the case where
+    an agent decides the write did not happen.
+    """
     if not before or not after:
-        return {}
+        return None
     out: dict[str, int] = {}
     for key, old in before.items():
         new = after.get(key)
@@ -970,7 +1053,9 @@ def _delta(before: dict | None, after: dict | None) -> dict[str, int]:
     return out
 
 
-def _fmt_delta(delta: dict[str, int]) -> str:
+def _fmt_delta(delta: dict[str, int] | None) -> str:
+    if delta is None:
+        return "not measured (census failed)"
     if not delta:
         return "unchanged"
     return ", ".join(f"{k} {v:+d}" for k, v in sorted(delta.items()))
@@ -987,6 +1072,9 @@ def ansa_status() -> str:
     st = SESSION.status()
     lines = [
         f"- connected: **{st['connected']}**",
+        f"- busy: {st['busy']}"
+        + (" (an ANSA call is in flight, so no probe was sent - this is not a"
+           " disconnected session)" if st["busy"] else ""),
         f"- port: {st['port']}",
         f"- mode: {st['mode']}",
         f"- pid: {st['pid']}",
@@ -1003,7 +1091,7 @@ def ansa_status() -> str:
             "never confirmed. Check the model before making more changes; see "
             "`ansa_step_history`."
         )
-    if st["connected"]:
+    if st["connected"] and not st["busy"]:
         probe = SESSION.run(
             "import json\n"
             "info = session.ApplicationInformation()\n"
@@ -2100,7 +2188,7 @@ def ansa_step_history(limit: int = 20) -> str:
              "| # | time | tool | status | model change | operation_id |",
              "|---|---|---|---|---|---|"]
     for s in rows:
-        delta = _fmt_delta(s.get("delta") or {}) if s.get("mutating") else "—"
+        delta = _fmt_delta(s.get("delta")) if s.get("mutating") else "—"
         lines.append(
             f"| {s['seq']} | {s['at']} | `{s['tool']}` | {s['status']} | "
             f"{delta} | `{s['operation_id']}` |"
@@ -2128,9 +2216,12 @@ def ansa_api_search(query: str, module: str = "", top_n: int = 5) -> str:
     """
     index = _api_index_path()
     if index is None:
-        return ("ANSA API index not found. Install it with "
-                "`pip install git+https://github.com/<ansa-api-mcp>` or set "
-                "`ANSA_API_INDEX` to the JSON file path.")
+        return ("ANSA API index not found. Build it once from the repo root "
+                "with `python tools/build_api_index.py` (add "
+                "`--ansa-home <ANSA install dir>` if autodetect fails). The "
+                "index is gitignored, so a fresh clone has none until you "
+                "build it; alternatively set `ANSA_API_INDEX` to an existing "
+                "JSON path.")
     try:
         data = json.loads(index.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

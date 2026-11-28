@@ -8,6 +8,15 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# A zh-CN console is GBK, and server text contains "⚠" as soon as one
+# operation is unresolved. Without this, print() raises UnicodeEncodeError and
+# a healthy handshake is reported as a crash (tests/README.md, environment).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "ansa_mcp_server.py")
 PYTHON = sys.executable

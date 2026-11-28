@@ -172,12 +172,21 @@ def run(params):
     return report
 
 
-TPARAMS = {
-    "nas_dir": r"D:/out/parts",
-    "seams_json": r"D:/out/weld/_seam_lines.json",
-    "fe_type": "RBE2",
-    "xml_out": r"D:/out/weld/_conns.xml",
-    "out_json": r"D:/out/weld/_seam_build.json",
-}
+# There are no built-in paths: every input belongs to the case being welded. A
+# bare exec() used to run the reference model's folders and report success, so an
+# agent with no context silently read the wrong files. Demand PARAMS instead - see
+# SKILL.md, "Passing parameters".
+_SEAM_REQUIRED = ("nas_dir", "seams_json", "fe_type")
 if globals().get("_SEAM_AUTORUN", True):
-    RESULT = run(TPARAMS)
+    _SEAM_PARAMS = globals().get("PARAMS")
+    if not _SEAM_PARAMS:
+        raise RuntimeError(
+            "MCP_PRECONDITION: seam_build: PARAMS is empty - set PARAMS = {...} "
+            "before exec(), or set _SEAM_AUTORUN = False and call run(PARAMS) "
+            "yourself. Required keys: "
+            + (", ".join(_SEAM_REQUIRED) or "none"))
+    _SEAM_MISSING = [k for k in _SEAM_REQUIRED if _SEAM_PARAMS.get(k) in (None, "")]
+    if _SEAM_MISSING:
+        raise RuntimeError("MCP_PRECONDITION: seam_build: PARAMS is missing "
+                           + ", ".join(_SEAM_MISSING))
+    RESULT = run(_SEAM_PARAMS)

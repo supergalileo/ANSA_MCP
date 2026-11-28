@@ -72,6 +72,53 @@ scripts/seam_chunks.py   fallback for the seams the manager refuses
 scripts/seam_final.py    cleanup, acceptance numbers, deck export
 ```
 
+### Passing parameters — every stage refuses to run without them
+
+There are **no default paths**. The scripts used to carry the reference model's
+folders (`D:/proj/beads`, `D:/out/weld`) and run themselves on a bare `exec()`, so
+an agent with no context welded the wrong (or no) model and still saw success. Now
+`PARAMS` is mandatory and its required keys are checked before the stage starts:
+
+| script | entry | required keys |
+|---|---|---|
+| `seam_extract.py` | `extract(PARAMS)` | `folder` |
+| `seam_build.py` | `run(PARAMS)` | `nas_dir`, `seams_json`, `fe_type` |
+| `seam_chunks.py` | `run(PARAMS)` | `bad_json`, `probe_xml` |
+| `seam_final.py` | `run(PARAMS)` | `probe_xml` |
+| `rbe2_to_bar.py` | `run(PARAMS)` | `work_dir` |
+| `solid_rep.py` | `run(PARAMS)` | none, but `PARAMS` must be non-empty |
+| `shell_rep.py` | `run(PARAMS)` | none, but `PARAMS` must be non-empty |
+
+Both refusals carry the marker `MCP_PRECONDITION:` in the exception text, e.g.
+`RuntimeError("MCP_PRECONDITION: seam_build: PARAMS is missing fe_type")`. The
+connector reads that marker as *"the script refused its input before touching the
+model"*: it files the operation as a clean failure and leaves it **safe to retry**,
+instead of `PARTIAL`, which would block the retry because the model might already
+have changed. Nothing is executed when the guard fires, so a corrected `PARAMS`
+goes straight back in. Do not drop the marker and do not work around the guard by
+editing the script.
+
+Two equivalent ways to run a stage:
+
+```python
+# 1. set PARAMS, then exec — the script runs itself with your parameters
+PARAMS = {"folder": r"D:/case/beads", "out_json": r"D:/case/_seam_lines.json"}
+exec(open(r"<skill>/scripts/seam_extract.py", encoding="utf-8").read(), globals())
+RESULT                      # left behind by the exec
+
+# 2. same file, nothing happens at exec time, call the entry yourself
+_SEAM_AUTORUN = False
+exec(open(r"<skill>/scripts/seam_extract.py", encoding="utf-8").read(), globals())
+RESULT = extract(PARAMS)    # run(PARAMS) for every other script
+```
+
+`_SEAM_AUTORUN` is the only switch. It is read from `globals()` *of the namespace
+you exec into*, so set it there, and set it **before** the `exec`, not after. It
+also **sticks**: once a session has it `False`, every later `exec` in that same
+namespace stays quiet too, which is exactly what you want when you drive each stage
+with `run(PARAMS)` yourself. Set it back to `True` (or `del _SEAM_AUTORUN`) if the
+next stage should run itself again.
+
 ### 0. Audit the geometry first
 
 ```bash
@@ -87,7 +134,10 @@ model 118 of 145 seams had two parts at 3 mm, 16 had one, 5 had none.
 ### 1. Extract the centerlines (ANSA)
 
 ```python
+PARAMS = {"folder": r"D:/case/beads",                    # one .stp/.step per bead
+          "out_json": r"D:/case/_seam_lines.json"}
 exec(open(r"<skill>/scripts/seam_extract.py", encoding="utf-8").read(), globals())
+RESULT
 ```
 
 `base.Open` on a CAD file **replaces the database**, so each bead is opened,
@@ -99,7 +149,13 @@ measured and discarded; only the JSON survives. The axis comes from
 ### 2. Build the connections (ANSA)
 
 ```python
+PARAMS = {"nas_dir": r"D:/case/parts",                   # one .nas per meshed part
+          "seams_json": r"D:/case/_seam_lines.json",
+          "fe_type": "RBE2",                             # the only value honoured
+          "xml_out": r"D:/case/_conns.xml",
+          "out_json": r"D:/case/_seam_build.json"}
 exec(open(r"<skill>/scripts/seam_build.py", encoding="utf-8").read(), globals())
+RESULT
 ```
 
 Assembles the parts, rebuilds one spline per centerline, creates one
@@ -117,7 +173,12 @@ empty while a wider radius was being tried.
 ### 4. Chunk what the manager still refuses
 
 ```python
+PARAMS = {"bad_json": r"D:/case/_bad_ids.json",          # the ids seam_build lost
+          "probe_xml": r"D:/case/_chunk_probe.xml",
+          "xml_out": r"D:/case/_conns.xml",
+          "out_json": r"D:/case/_seam_chunks.json"}
 exec(open(r"<skill>/scripts/seam_chunks.py", encoding="utf-8").read(), globals())
+RESULT
 ```
 
 Cuts each failing line into ~20 mm pieces and re-runs the same chain on the
@@ -127,7 +188,11 @@ Keep the original connection until its pieces exist.
 ### 5. Accept and export
 
 ```python
+PARAMS = {"probe_xml": r"D:/case/_final_probe.xml",
+          "delete_unused": True,
+          "out_json": r"D:/case/_seam_final.json"}
 exec(open(r"<skill>/scripts/seam_final.py", encoding="utf-8").read(), globals())
+RESULT
 ```
 
 Deletes the connections that never reached two parts, counts what is left, checks
@@ -136,7 +201,12 @@ for floating grids, and writes the deck.
 ### 6. Optional: make the weld elastic (RBE2 → CBAR)
 
 ```python
+PARAMS = {"work_dir": r"D:/case/weld",
+          "diameter": 4.0,                               # bead diameter
+          "export_nas": r"D:/case/weld/seam_welded_bar.nas",
+          "out_json": r"D:/case/weld/_rbe2_to_bar.json"}
 exec(open(r"<skill>/scripts/rbe2_to_bar.py", encoding="utf-8").read(), globals())
+RESULT
 ```
 
 Replaces every two-node RBE2 with one CBAR of `PBARL ROD`, `DIM1` = bead
@@ -158,7 +228,13 @@ move.
 ### 7. Optional: weld as a solid — CHEXA brick + RBE3
 
 ```python
+PARAMS = {"fe_rep": "RBE3-HEXA-RBE3",
+          "width": 4.0,                                  # W — must be non-zero
+          "height": 2.0,                                 # weld thickness, mm
+          "export_nas": r"D:/case/weld/seam_welded_solid.nas",
+          "out_json": r"D:/case/weld/_solid_rep.json"}
 exec(open(r"<skill>/scripts/solid_rep.py", encoding="utf-8").read(), globals())
+RESULT
 ```
 
 The connection manager can build the weld itself as a **solid**: FE
@@ -214,7 +290,16 @@ seams built as solids and the remaining 15 fell back to RBE2 in the same call
 ### 8. Optional: weld as quad shells — node-shared
 
 ```python
+PARAMS = {"fe_rep": "OVERLAP-SHELL",
+          "width": 4.0,
+          "root_shells": "Single Row",
+          "fallback_rep": "RBE3-SHELL-RBE3",
+          "restore_properties": True,
+          "export_nas": r"D:/case/weld/seam_welded_quad.nas",
+          "save_ansa": r"D:/case/weld/seam_welded_quad.ansa",
+          "out_json": r"D:/case/weld/_shell_rep.json"}
 exec(open(r"<skill>/scripts/shell_rep.py", encoding="utf-8").read(), globals())
+RESULT
 ```
 
 `OVERLAP-SHELL` builds the weld out of **CQUAD4 sitting on the existing plate
@@ -325,7 +410,7 @@ elements with a different property.
 | `n_pts` | 15 | stations sampled along each bead axis |
 | `nas_dir` | — | one `.nas` per meshed part |
 | `steps` | `[(3,2),(5,2),(6,1),(10,1)]` | `(search_distance, find_exactly)` sweep |
-| `fe_type` | `"RBE2"` | the only value this release honours (see traps) |
+| `fe_type` | — (required by `seam_build`) | the only value this release honours: `"RBE2"` (see traps). Omit it and the connections are created with **no FE at all** and the call still returns success |
 | `chunk` / `samples` | 20.0 / 40 | fallback piece length, curve sampling |
 | `delete_unused` | True | drop connections with fewer than two parts |
 | `diameter` | 4.0 | rod diameter for the CBAR post-pass |
@@ -452,6 +537,11 @@ Never report success from the return value of `RealizeConnections` alone: it
 counts connections, not elements, and it accepts nonsense parameters.
 
 ## Bundled resources
+
+Every script under `scripts/` except `seam_audit.py` runs inside ANSA, and **all of
+them refuse to run without `PARAMS`** — see *Passing parameters* for the required
+keys and for the `_SEAM_AUTORUN` switch. `seam_audit.py` is the one offline tool;
+it takes CLI flags, not `PARAMS`.
 
 - `scripts/seam_audit.py` — offline: distance to nearest node and distinct parts
   per bead. Run before touching ANSA.

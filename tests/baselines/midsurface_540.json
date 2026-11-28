@@ -1,0 +1,60 @@
+{
+  "name": "midsurface-540-body-in-white",
+  "kind": "batch",
+  "source": "docs",
+  "reproduced_locally": false,
+  "not_reproduced_note": "本机没有 540 件源目录（parts/）也没有那次交付的 out/，以下期望值全部抄自文档，未经本机复跑。写入时即标注：任何一项若与文档不符，以文档为准并先更新本文件。",
+  "evidence": [
+    "README.md:332-339",
+    "skills/ansa-midsurface-mesh/SKILL.md:226-238",
+    "skills/ansa-midsurface-mesh/references/field-notes.md:220-232",
+    "skills/ansa-midsurface-mesh/references/field-notes.md:238-246"
+  ],
+  "measured": {
+    "ansa": "24.1.2",
+    "ansa_home": "F:\\Program Files (x86)\\BETA_CAE_Systems\\ansa_v24.1.2",
+    "deck": "nastran",
+    "target_mm": 5.0,
+    "workers": 6,
+    "hardware": "16 cores / 64 GB",
+    "wall_clock": "~30 min",
+    "date": "2026-11"
+  },
+  "partition": {
+    "comment": "field-notes.md:229-232 的四类之和必须等于零件数；这是本基准唯一的内部一致性检查。",
+    "skin_done": 382,
+    "hardware": 129,
+    "casting_rescued": 20,
+    "unresolved": 9
+  },
+  "expect": {
+    "parts": 540,
+    "skin_done": 382,
+    "skin_done_ratio": 0.707,
+    "hardware": 129,
+    "casting_attempted": 24,
+    "casting_rescued": 20,
+    "casting_failed": 4,
+    "delivered_total": 402,
+    "unresolved": 9,
+    "unresolved_foam_or_nvh": 4,
+    "shell_elements": 1742602,
+    "unique_ansa": 540,
+    "unique_nas": 402
+  },
+  "known_gap": {
+    "comment": "README.md:336 的『出网格 382（70.7%）』只算 Skin 主线；加上 Casting 救援的 20 件，交付总数是 402（74.4%）。两个数都对，别混用。",
+    "skin_ratio": 0.707,
+    "overall_ratio": 0.744
+  },
+  "tolerance": {
+    "shell_elements_pct": 0.5,
+    "comment": "件数是精确断言；壳单元数允许 0.5% 漂移（重新划网格的随机性），超了就算回归。"
+  },
+  "gates": [
+    "每件的 ansa 路径在全批次内唯一（输出覆盖是静默数据丢失，见 field-notes.md:238-246）",
+    "每件的 nas 路径在全批次内唯一，且唯一 nas 数 == 交付件数",
+    "交付件的壳单元数之和落在 1 742 602 ±0.5%",
+    "未解决清单非空时必须逐条列出，不能只报成功数"
+  ]
+}

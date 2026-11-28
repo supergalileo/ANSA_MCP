@@ -1,0 +1,68 @@
+{
+  "name": "gemo_95",
+  "description": "95 个真实 CATPart（E:/Project/DSH/ANSA_MCP/gemo）的中间面批处理实测基准。与 midsurface_540.json 不同，这一份是本机真跑出来的，不是抄文档。",
+  "reproduced_locally": true,
+  "measured": {
+    "date": "2026-11-28",
+    "machine": "Windows 10 19045, 16 cores",
+    "ansa": "F:\\Program Files (x86)\\BETA_CAE_Systems\\ansa_v24.1.2 (ANSA_BAT 环境变量指向该版本)",
+    "python": "py -3.12 (Python 3.12.9)",
+    "source": "E:/Project/DSH/ANSA_MCP/gemo — 根目录 95 个 CATPart；gemo/weld 下另有 24 个 _WELD.CATPart，不在本跑内",
+    "command": "py -3.12 skills/ansa-midsurface-mesh/scripts/parallel_batch.py --src gemo --out out/gemo_run2 --workers 2",
+    "casting_command": "py -3.12 skills/ansa-midsurface-mesh/scripts/casting_batch.py --src gemo --out out/gemo_cast4 --only out/gemo_run2/_skin_failed.json",
+    "note": "out/gemo_run1 是同一批数据的首次运行（修复相对路径 bug 之前），分类结果与本次逐件一致（95/95 状态相同）。two runs of shell elements: 7859 (run1+cast1) / 7795 (run2+cast3) / 7795 (run2+cast4)，单元数有 ±0.8% 的跑间波动，故容差取 2%。out/gemo_cast4 是 casting_batch.py 修完相对路径后、用相对 --src/--out 跑出来的，rc=0。"
+  },
+  "evidence": [
+    "out/gemo_run1/_progress.jsonl 95 条 end 记录（2026-11-28 16:05-16:10 实测）",
+    "out/gemo_cast1/_casting_progress.jsonl 12 条 Casting 记录，救回 2 条（16:10-16:11）",
+    "out/gemo_run2/_progress.jsonl —— parallel_batch.py 绝对路径修复后的复跑"
+  ],
+  "expect": {
+    "parts": 95,
+    "skin_done": 34,
+    "skin_done_ratio": 0.3579,
+    "hardware": 38,
+    "not_sheet_metal": 11,
+    "skin_failed": 12,
+    "delivered_total": 36,
+    "delivered_ratio": 0.3789,
+    "unresolved": 21,
+    "casting_attempted": 12,
+    "casting_rescued": 2,
+    "casting_failed": 10,
+    "shell_elements": 7859,
+    "unique_ansa": 95,
+    "unique_nas": 36
+  },
+  "partition": {
+    "skin_done": 34,
+    "hardware": 38,
+    "casting_rescued": 2,
+    "unresolved": 21
+  },
+  "hardware_breakdown": {
+    "by_part_number_code": 14,
+    "skin_zero_faces_after_repair": 13,
+    "area_below_hardware_area": 11
+  },
+  "pshell": {
+    "cards_per_deck": 1,
+    "thickness_min": 1.15,
+    "thickness_max": 3.0,
+    "tolerance": 0.01
+  },
+  "tolerance": {
+    "shell_elements_pct": 2.0
+  },
+  "known_issues": [
+    "hardware 里 14/38 只按件号 S\\d{6}$ 判标准件，从未测厚度（fraction=null）；同件号带 _2.._n 后缀的副本不命中该正则，改走几何判据，等于同一件两种判法。",
+    "A007S010023 (7440 mm2)、A007S010024 (4895 mm2) 面积超过 4000 mm2 阈值，只因件号被排除；同件号 _2 副本实测 is_sheet_metal=True / fraction=1.0，是薄壁件。若把件号闸门挪到 classify() 之后，这两件会变 skin_failed，hardware 38->36，交付数不变。需用户拍板。",
+    "Casting 第二遍 12 件只救回 2 件，10 件 MidSurfAuto 报 thick=-1.00/0.00。"
+  ],
+  "fixed_after_measurement": [
+    "相对路径 bug：parallel_batch.py 与 casting_batch.py 均已对 --src/--out/--mpar/--qual/--ana-bat(abs)/--only 做 abspath。验证：相对 --src gemo --out out/gemo_cast4 跑 12 件 Casting -> rc=0、50s、rescued 2 / failed 10。",
+    "抢救清单.csv 覆盖：casting_midsurf.py 改为合并写。验证：out/gemo_cast4/抢救清单.csv 13 行（表头+12 条），与 _casting_progress.jsonl 的 12 条一致；修前同一跑只有 1 条。",
+    "退出码假成功：worker 放弃 / died 时返回 2。验证：坏 ansa64.bat 下 parallel_batch rc=2、casting_batch rc=2；真 ANSA 下 rc=0（2/2 done、12 件 Casting 50s）。",
+    "本基准的 run2/cast4 就是修复后跑的，28 条断言全过；换修复前的 run1/cast1 也 28/0（分类逐件一致，只有壳单元数 ±0.8%）。"
+  ]
+}
