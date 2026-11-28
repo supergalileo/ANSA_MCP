@@ -1,8 +1,8 @@
-\---  
+---  
 name: ansa-midsurface-mesh  
-description: Extract mid-surfaces from thin-walled CAD geometry in ANSA and generate a shell mesh at a given target element size, with the measured wall thickness written into PSHELL properties. Covers both meshing engines - \`mesh.Mesh\` (Shell Mesh > Mesh) and a Batch Mesh session - driven by the user's \`.ansa_mpar\` / \`.ansa_qual\` files, plus the geometry repair that makes \`base.Skin\` succeed and the Casting second pass for parts Skin refuses. This skill should be used for requests such as "抽中面并划 5mm 网格", "钣金件抽中面并赋予正确厚度", "用批处理/批处理网格划网格", "midsurface + shell mesh for the sheet metal parts", "把 CAD 面模型变成壳网格并导出求解文件", or whenever an ANSA database full of closed thin-walled surfaces must become a solver-ready shell mesh. Also use it when a mesh built by this skill is judged worse than one built by hand in ANSA, or when a user questions whether their mpar/qual files were honoured.  
+description: Extract mid-surfaces from thin-walled CAD geometry in ANSA and generate a shell mesh at a given target element size, with the measured wall thickness written into PSHELL properties. Covers both meshing engines - `mesh.Mesh` (Shell Mesh > Mesh) and a Batch Mesh session - driven by the user's `.ansa_mpar` / `.ansa_qual` files, plus the geometry repair that makes `base.Skin` succeed and the Casting second pass for parts Skin refuses. This skill should be used for requests such as "抽中面并划 5mm 网格", "钣金件抽中面并赋予正确厚度", "用批处理/批处理网格划网格", "midsurface + shell mesh for the sheet metal parts", "把 CAD 面模型变成壳网格并导出求解文件", or whenever an ANSA database full of closed thin-walled surfaces must become a solver-ready shell mesh. Also use it when a mesh built by this skill is judged worse than one built by hand in ANSA, or when a user questions whether their mpar/qual files were honoured.  
 agent_created: true  
-\---
+---
 
 # ANSA mid-surface + shell mesh
 
