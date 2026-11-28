@@ -4,23 +4,30 @@
 926 个文件混在一起，一周后没人分得清哪件成功了、哪件失败了、哪件是兜底救回来的。
 
 这个脚本做三件事：
-  1. 按 汇总.csv 的「状态」列把产物分进 6 个分类目录
+  1. 按 汇总.csv 的「状态」列把产物分进分类目录
   2. 每个分类目录写一份 _清单.csv
   3. 在 out 根目录写 README.md，讲清每个目录里是什么
+  另外（给了 --refs 时）把 R* 连接参考件按 焊点/粘胶 归位，并从 --beads 的
+  扫描结果里挑出 >=20 mm 的长条焊接体写进 09_焊缝 的候选清单。
 
 用法：
     python organize_output.py --out <output目录>              # 演练，只打印计划
     python organize_output.py --out <output目录> --apply       # 真移动
+    python organize_output.py --out <output目录> --refs <CAD目录> \
+           --beads <weld_beads.json> --apply                   # 连参考件一起整理
 
 分类口径（对应 汇总.csv 的「状态」列）：
 
     hardware                                    -> 01_紧固件
-    done                                        -> 02_Skin成功
+    done（连通且校验通过）                        -> 02_Skin成功
+    done 但连通块 >1 或校验不通过                 -> 07_有疑问_需复核
     rescued / rescued_var                       -> 04_Casting成功
-    not_sheet_metal                             -> 06_玻璃_未纳入
+    skin_failed                                 -> 05_最终失败（05 与 02 互补，别混）
+    not_sheet_metal                             -> 06_非钣金_未纳入
     timeout / casting_partial / casting_failed   -> 05_最终失败
 
     03_Skin失败 只放过程记录（所有 Skin 没出中面的件 + 去向），不放产物。
+    08_焊点 / 09_焊缝 / 10_粘胶 放连接参考几何与候选清单，不计入网格交付数。
 
 幂等：已经在分类目录里的文件不会被再移动；重复运行安全。
 """
@@ -38,24 +45,31 @@ CLASS = {
     "done": "02_Skin成功",
     "rescued": "04_Casting成功",
     "rescued_var": "04_Casting成功",
-    "not_sheet_metal": "06_玻璃_未纳入",
+    "not_sheet_metal": "06_非钣金_未纳入",
+    "skin_failed": "05_最终失败",
     "timeout": "05_最终失败",
     "casting_partial": "05_最终失败",
     "casting_failed": "05_最终失败",
 }
-SKIN_FAILED = ("rescued", "rescued_var", "not_sheet_metal",
+SKIN_FAILED = ("skin_failed", "rescued", "rescued_var", "not_sheet_metal",
                "timeout", "casting_partial", "casting_failed")
 DEST = {
     "rescued": "04_Casting成功",
     "rescued_var": "04_Casting成功",
-    "not_sheet_metal": "06_玻璃_未纳入",
+    "not_sheet_metal": "06_非钣金_未纳入",
+    "skin_failed": "05_最终失败",
     "timeout": "05_最终失败",
     "casting_partial": "05_最终失败",
     "casting_failed": "05_最终失败",
 }
+# done 里质检有问题的（多连通、边长不达标）单独隔离，避免和干净件混在一起
+QUESTIONABLE = "07_有疑问_需复核"
 
 DIRS = ["00_总表", "01_紧固件", "02_Skin成功", "03_Skin失败",
-        "04_Casting成功", "05_最终失败", "06_玻璃_未纳入", "_工作目录"]
+        "04_Casting成功", "05_最终失败", "06_非钣金_未纳入",
+        "07_有疑问_需复核", "08_焊点", "09_焊缝", "10_粘胶", "_工作目录"]
+# 连接参考目录：装 CAD 参考几何 / 候选清单，不是本次网格产物
+CONN_DIRS = ("08_焊点", "09_焊缝", "10_粘胶")
 
 WORK_DIRS = ["_ansa_tmp", "_audit", "_driver", "_driver_islands",
              "_driver_run1", "_driver_run2", "_repair", "_repair2",
@@ -72,7 +86,11 @@ DESC = {
     "03_Skin失败": ("29", "只是过程记录：Skin 没出中面的件清单，产物在 04/05/06"),
     "04_Casting成功": ("20", "Skin 失败后由 Casting 救回，每件 .ansa + .nas"),
     "05_最终失败": ("4", "两条路都没通，只有 .ansa（排查用）和失败原因"),
-    "06_玻璃_未纳入": ("5", "固定玻璃，Casting 出了网格但未计入交付，等定"),
+    "06_非钣金_未纳入": ("5", "玻璃/泡沫/厚铸件/NVH 垫，壁厚不达标，抽中面没有意义"),
+    "07_有疑问_需复核": ("0", "已出网格但质检不过：多连通、边长偏离目标。需要人工看一眼"),
+    "08_焊点": ("—", "焊接参考几何（点焊 nugget 参考体）；装配时按它定位焊点单元"),
+    "09_焊缝": ("—", "焊缝候选清单：参考件里 ≥20 mm 的长条焊接体"),
+    "10_粘胶": ("—", "胶接参考几何（ADHESIVE 参考体），装配时据此建胶层单元"),
     "_工作目录": ("—", "驱动脚本、日志、旧版本备份。日常不用看"),
 }
 
@@ -80,6 +98,21 @@ COLS = ["零件", "中文名称", "编号", "状态", "判定厚度mm", "壳单�
         "连通块", "校验", "原因", "备注"]
 HEAD = ["零件", "中文名称", "编号", "状态", "厚度mm", "壳单元",
         "连通块", "校验", "原因", "备注"]
+
+
+def _questionable(r):
+    """done 但质检不过：多连通，或边长/属性校验有话说。"""
+    conn = (r.get("连通块") or "").strip()
+    chk = (r.get("校验") or "").strip()
+    return (conn not in ("", "1")) or (chk not in ("", "通过", "ok"))
+
+
+def dest(r):
+    """一行汇总该去哪个目录（done-但-有疑问 走 07，不进 02）。"""
+    cls = CLASS.get(r["状态"])
+    if cls == "02_Skin成功" and _questionable(r):
+        return QUESTIONABLE
+    return cls
 
 
 def find_file(out, name, subdirs=("casting", "glass")):
@@ -110,7 +143,7 @@ def plan_moves(out):
 
     for r in rows:
         st = r["状态"]
-        cls = CLASS.get(st)
+        cls = dest(r)
         if not cls:
             unknown.append((r["零件"], st))
             continue
@@ -119,7 +152,7 @@ def plan_moves(out):
 
         # 玻璃的 .ansa 优先用 glass/ 的重跑版本（顶层的可能是 Skin 失败的空库）
         if a:
-            if cls == "06_玻璃_未纳入":
+            if cls == "06_非钣金_未纳入":
                 cand = find_file(out, a, ("glass",))
             else:
                 cand = find_file(out, a, ("casting",))
@@ -145,16 +178,16 @@ def plan_moves(out):
     # 总表
     for f in os.listdir(out):
         p = os.path.join(out, f)
-        if os.path.isfile(p) and (f in KEEP_AT_TOP or f.endswith(".md")):
+        if os.path.isfile(p) and f != "README.md" and (f in KEEP_AT_TOP or f.endswith(".md")):
             plan["00_总表"].append((p, f))
 
     # 玻璃的 .nas 清单里没记，从 glass/ 补
     if os.path.isdir(os.path.join(out, "glass")):
-        have = {t for s, t in plan.get("06_玻璃_未纳入", [])}
+        have = {t for s, t in plan.get("06_非钣金_未纳入", [])}
         for src in sorted(glob.glob(os.path.join(out, "glass", "*.nas"))):
             name = os.path.basename(src)
             if name not in have:
-                plan["06_玻璃_未纳入"].append((src, name))
+                plan["06_非钣金_未纳入"].append((src, name))
 
     return plan, rows, unknown
 
@@ -163,7 +196,7 @@ def write_lists(out, rows):
     os.makedirs(os.path.join(out, "03_Skin失败"), exist_ok=True)
     groups = defaultdict(list)
     for r in rows:
-        d = CLASS.get(r["状态"])
+        d = dest(r)
         if d:
             groups[d].append(r)
 
@@ -191,7 +224,7 @@ def write_lists(out, rows):
     return groups, skin_failed
 
 
-def write_readme(out, rows, groups):
+def write_readme(out, rows, groups, skin_failed=()):
     n_skin = len(groups.get("02_Skin成功", []))
     n_cast = len(groups.get("04_Casting成功", []))
     total = n_skin + n_cast
@@ -208,13 +241,21 @@ def write_readme(out, rows, groups):
     ]
     for d in DIRS:
         n, txt = DESC[d]
-        # 用实际件数覆盖静态描述里的数字
-        if d in groups:
+        # 一律用本次运行的实际件数，静态数字只在拿不到时兜底
+        if d == "00_总表":
+            n = str(len(rows))
+        elif d == "03_Skin失败":
+            n = str(len(skin_failed))
+        elif d in groups:
             n = str(len(groups[d]))
+        elif d not in ("_工作目录",) + CONN_DIRS:
+            n = "0"
         lines.append("| `%s/` | %s | %s |" % (d, n, txt))
     lines += [
         "",
-        "**交付总数 = %d 件**（Skin %d + Casting %d）。" % (total, n_skin, n_cast),
+        "**交付总数 = %d 件**（Skin %d + Casting %d）；另有 %d 件已出网格但质检待复核，"
+        "在 07_有疑问_需复核/。" % (total, n_skin, n_cast,
+                                     len(groups.get(QUESTIONABLE, []))),
         "",
         "## 处理流程与去向",
         "",
@@ -231,7 +272,9 @@ def write_readme(out, rows, groups):
         "   │     ├─ 成功 ────────────────────► 04_Casting成功",
         "   │     └─ 失败 ────────────────────► 05_最终失败",
         "   │",
-        "   └─ 特例：玻璃 ─────────────────────► 06_玻璃_未纳入",
+        "   ├─ 特例：非钣金（玻璃/泡沫/厚件）──► 06_非钣金_未纳入",
+        "   │",
+        "   └─ 出了网格但质检不过 ────────────► 07_有疑问_需复核",
         "```",
         "",
         "`03_Skin失败/_清单.csv` 有一列「**去向**」，直接说明这件最后落在哪个文件夹。",
@@ -273,11 +316,80 @@ def write_readme(out, rows, groups):
     open(os.path.join(out, "README.md"), "w", encoding="utf-8").write("\n".join(lines) + "\n")
 
 
+def organize_refs(out, refs_src, beads_json=None, apply=False):
+    """把 R* 连接参考件按类型摆进 08_焊点 / 10_粘胶，并从 beads_json 里挑出长条体
+    写进 09_焊缝。参考件只做硬链接，不复制（几十 MB 的原件不该在这里多存一份）。"""
+    idx = {}
+    p = os.path.join(refs_src, "零件索引_553引用_20261106.csv")
+    if os.path.isfile(p):
+        idx = {r["文件名"]: r for r in csv.DictReader(open(p, encoding="utf-8-sig"))}
+
+    buckets = {"08_焊点": [], "10_粘胶": []}
+    for name in sorted(os.listdir(refs_src)):
+        up = name.upper()
+        if not up.endswith(".CATPART"):
+            continue
+        if "_WELD" in up:
+            buckets["08_焊点"].append(name)
+        elif "ADHESIVE" in up:
+            buckets["10_粘胶"].append(name)
+
+    made = 0
+    for d, names in buckets.items():
+        sub = os.path.join(out, d, "参考几何")
+        os.makedirs(sub, exist_ok=True)
+        rows = []
+        for name in names:
+            src = os.path.join(refs_src, name)
+            meta = idx.get(name, {})
+            rows.append([name, meta.get("中文名称", ""), meta.get("参考Body测量记录数", ""),
+                         meta.get("Body或来源文件索引", ""), src.replace("\\", "/")])
+            dst = os.path.join(sub, name)
+            if apply and not os.path.exists(dst):
+                try:
+                    os.link(src, dst)
+                    made += 1
+                except OSError:
+                    shutil.copy2(src, dst)
+                    made += 1
+        with open(os.path.join(out, d, "清单.csv"), "w", encoding="utf-8-sig", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["文件", "中文名称", "参考体记录数", "Body索引", "源路径"])
+            w.writerows(rows)
+
+    # 09_焊缝：从参考件几何里挑长条焊接体（>=20 mm），列清楚出处
+    seam_dir = os.path.join(out, "09_焊缝")
+    os.makedirs(seam_dir, exist_ok=True)
+    long_rows, stats = [], []
+    if beads_json and os.path.isfile(beads_json):
+        for rec in json.load(open(beads_json, encoding="utf-8")):
+            beads = rec.get("beads") or []
+            ng = sum(1 for b in beads if b.get("dims", [0])[-1] >= 20.0)
+            stats.append([rec["file"], len(beads), ng])
+            for k, b in enumerate(beads, 1):
+                if b.get("dims", [0])[-1] >= 20.0:
+                    long_rows.append([rec["file"], k, b["n_faces"], b["type"],
+                                      b["center"][0], b["center"][1], b["center"][2],
+                                      b["dims"][0], b["dims"][1], b["dims"][2]])
+    with open(os.path.join(seam_dir, "焊缝候选_清单.csv"), "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["参考件", "序号", "面数", "分类", "X", "Y", "Z", "宽", "高", "长"])
+        w.writerows(long_rows)
+    with open(os.path.join(seam_dir, "参考件统计.csv"), "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["参考件", "焊接体数", "其中>=20mm"])
+        w.writerows(stats)
+    print("  连接参考：焊点 %d 件 / 粘胶 %d 件 / 焊缝候选 %d 条（链接 %d 个文件）"
+          % (len(buckets["08_焊点"]), len(buckets["10_粘胶"]), len(long_rows), made))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="output 目录")
     ap.add_argument("--apply", action="store_true", help="真移动；不加只演练")
     ap.add_argument("--no-readme", action="store_true", help="不生成 README")
+    ap.add_argument("--refs", help="CAD 参考件目录（R*_WELD / R*_ADHESIVE）")
+    ap.add_argument("--beads", help="焊接体扫描结果 weld_beads.json")
     args = ap.parse_args()
     out = os.path.abspath(args.out)
 
@@ -301,10 +413,16 @@ def main():
 
     # 对账：计划移动数 + 已在目标目录里的数 = 实际应有多少
     want = defaultdict(int)
+    want_files = defaultdict(int)
     for r in rows:
-        d = CLASS.get(r["状态"])
-        if d:
-            want[d] += 1
+        d = dest(r)
+        if not d:
+            continue
+        want[d] += 1
+        if r.get("ansa"):
+            want_files[d] += 1
+        if r.get("nas"):
+            want_files[d] += 1
     print()
     print("%-16s %6s %8s %8s" % ("目录", "应有件", "待移动", "已在位"))
     bad = 0
@@ -318,8 +436,9 @@ def main():
             onplace = sum(1 for f in os.listdir(p)
                           if f.endswith(".ansa") or f.endswith(".nas"))
         w = want.get(d, 0)
-        # 01 只有 ansa；02/04/06 应 ansa+nas 各一份；05 只有 ansa
-        expect = w if d in ("01_紧固件", "05_最终失败") else w * 2
+        # 应到位文件数按汇总表实际记录算：有 .ansa 记一份、有 .nas 记一份，
+        # 这样没跑 Casting（05 只有 ansa）、非钣金（06 无 nas）都不会误报差异
+        expect = want_files.get(d, 0)
         got = pending + onplace
         mark = "" if got == expect else "  <== 差 %d" % (expect - got)
         if got != expect:
@@ -356,8 +475,10 @@ def main():
             moved["_工作目录"] += 1
 
     groups, skin_failed = write_lists(out, rows)
+    if args.refs:
+        organize_refs(out, args.refs, args.beads, apply=True)
     if not args.no_readme:
-        write_readme(out, rows, groups)
+        write_readme(out, rows, groups, skin_failed)
 
     print()
     for d in DIRS:

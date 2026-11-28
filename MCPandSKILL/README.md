@@ -44,7 +44,7 @@
 | `skills/ansa-midsurface-mesh/scripts/casting_midsurf.py` | 二遍救援：`autosurf`（默认）或 `middle` 两条路，见下文 |
 | `skills/ansa-midsurface-mesh/scripts/casting_batch.py` | 二遍救援的批量版，一件一个 ANSA 进程 |
 | `skills/ansa-midsurface-mesh/scripts/rescue_midsurf.py` | 单件 `MidSurfAuto` 包装，已被 `casting_midsurf.py --casting autosurf` 取代 |
-| `skills/ansa-midsurface-mesh/scripts/organize_output.py` | 把平铺输出目录按处理阶段分成 6 类，出清单 + README |
+| `skills/ansa-midsurface-mesh/scripts/organize_output.py` | 把平铺输出目录按处理阶段分类（含"有疑问"与焊点/焊缝/粘胶参考件），出清单 + README |
 | `skills/ansa-midsurface-mesh/scripts/inspect_model.py` | 只读巡检：实体数、分件 bbox 与厚度分布 |
 | `skills/ansa-bolt-connection/` | 螺栓连接 Skill：从螺栓实体建 2 RBE2 + 1 CBAR（PBARL ROD） |
 | `skills/ansa-bolt-connection/scripts/bolt_connection.py` | 两阶段：提螺栓轴线 → 建连接（孔心对齐、整圈抓取、多层合并、单层单片） |

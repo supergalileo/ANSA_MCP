@@ -464,17 +464,38 @@ python scripts/organize_output.py --out <out>            # dry run, prints the p
 python scripts/organize_output.py --out <out> --apply    # move + write lists
 ```
 
-It sorts by the `状态` column of `汇总.csv` into six stage folders, writes a  
+It sorts by the `状态` column of `汇总.csv` into stage folders, writes a  
 `_清单.csv` into each, and generates `README.md` at the root:
 
-| folder         | comes from                                     | contents                                                         |
-| -------------- | ---------------------------------------------- | ---------------------------------------------------------------- |
-| `01_紧固件`       | `hardware`                                     | standard parts, `.ansa` only, no mesh                            |
-| `02_Skin成功`    | `done`                                         | `.ansa` + `.nas`                                                 |
-| `03_Skin失败`    | all non-`done`                                 | **process record only** - a list with a `去向` column, no products |
-| `04_Casting成功` | `rescued`, `rescued_var`                       | `.ansa` + `.nas`                                                 |
-| `05_最终失败`      | `timeout`, `casting_partial`, `casting_failed` | `.ansa` (for debugging) + reason                                 |
-| `06_玻璃_未纳入`    | `not_sheet_metal`                              | `.ansa` + `.nas`, not counted in the delivery                    |
+| folder           | comes from                                       | contents                                                           |
+| ---------------- | ------------------------------------------------ | ------------------------------------------------------------------ |
+| `00_总表`         | `汇总.csv` + the report                         | the four summary CSVs, read these first                            |
+| `01_紧固件`         | `hardware`                                       | standard parts, `.ansa` only, no mesh                              |
+| `02_Skin成功`      | `done` (clean)                                   | `.ansa` + `.nas`                                                   |
+| `03_Skin失败`      | all non-`done`                                   | **process record only** - a list with a `去向` column, no products   |
+| `04_Casting成功`   | `rescued`, `rescued_var`                         | `.ansa` + `.nas`                                                   |
+| `05_最终失败`        | `timeout`, `casting_partial`, `casting_failed`   | `.ansa` (for debugging) + reason                                   |
+| `06_非钣金_未纳入`      | `not_sheet_metal`                                | glass / foam / thick parts, not counted in the delivery            |
+| `07_有疑问_需复核`      | `done` but >1 component or a failing check        | `.ansa` + `.nas`; a delivered deck that needs a human look          |
+| `08_焊点` / `09_焊缝` / `10_粘胶` | `--refs` + `--beads`               | connection reference CAD (hard-linked), seam candidate list        |
+
+`07` is the point of the split: "produced a deck" and "produces a deck you can  
+trust" are different claims. A part that meshed but came out as two disconnected  
+bodies goes to `07`, not `02`, so the delivery count never hides it.
+
+`08/09/10` are filled only when you pass the connection library:
+
+```
+python scripts/organize_output.py --out <out> --refs <dir with R*_WELD/R*_ADHESIVE> \
+       --beads <weld_beads.json> --apply
+```
+
+The R parts are hard-linked (they are tens of MB each, never copy them), renamed  
+nowhere, and listed in `清单.csv`; `09_焊缝` gets every weld body whose longest  
+dimension is >= 20 mm as a *candidate* list. Say "candidate", not "seam": an 8 mm  
+nugget chain merged by a 0.35 mm tolerance also comes out long. On the 553-reference  
+BIW model the 13 R parts collapsed to 6 288 bodies, P50 = 8.0 mm, 599 of them  
+>= 20 mm - most of the library is spot-weld reference, not seam.
 
 Two traps this script handles, both hit for real:
 
@@ -571,9 +592,11 @@ Say that parts are meshed independently and therefore share no nodes.
   run: reads `_progress.jsonl`, applies the 0f gates (including "does the `.nas`  
   really carry `MAT1`" and "two rows sharing one output path"), writes the four  
   deliverable CSVs, and can scan every deck for disjoint components.
-- `scripts/organize_output.py` - sorts a flat output directory into the six stage  
-  folders of 0h, writes a `_清单.csv` per folder and a `README.md` at the root.  
-  Idempotent, dry-run by default. Run it before every handover.
+- `scripts/organize_output.py` - sorts a flat output directory into the stage  
+  folders of 0h (including `07_有疑问_需复核` and the connection folders  
+  `08_焊点`/`09_焊缝`/`10_粘胶`), writes a `_清单.csv` per folder and a  
+  `README.md` at the root. Idempotent, dry-run by default. Run it before every  
+  handover.
 - `scripts/deck_stats.py` - per-deck statistics off the `.nas`: quad ratio, free  
   edges per 1k, and `--blocks` for per-component area and bbox. This is how you  
   tell a genuinely fragmented mid-surface from an inner-wall/outer-wall part.
